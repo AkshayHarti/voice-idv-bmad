@@ -92,3 +92,26 @@ test("session decisions equal report decisions per fixture (shared measurements)
     assert.equal(viaSession.report.tier, viaReport.tier);
   }
 });
+
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+test("session creation works without WebCrypto (shaped fallback id)", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  Object.defineProperty(globalThis, "crypto", {
+    value: undefined,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    const created = await post("/api/session", { fixtureId: "aus-passport-clean" });
+    assert.equal(created.status, 200);
+    assert.match(created.body.sessionId, UUID_SHAPE);
+    const said = await post(`/api/session/${created.body.sessionId}/say`, { utterance: "I consent" });
+    assert.equal(said.body.stage, "awaiting_doc_front");
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "crypto", descriptor);
+  }
+  const primary = await post("/api/session", { fixtureId: "aus-passport-clean" });
+  assert.equal(primary.status, 200);
+  assert.match(primary.body.sessionId, UUID_SHAPE);
+});

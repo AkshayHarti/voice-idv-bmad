@@ -122,10 +122,33 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 
-/** Unpredictable session ids via Web Crypto (Node 19+ and Workers). */
+/**
+ * Session ids: Web Crypto UUID primary; a UUIDv4-shaped Math.random id
+ * where Web Crypto is unavailable (same 8-4-4-4-12 string shape, so
+ * callers never branch on the source).
+ */
 function sessionId(): string {
-  const webCrypto = (globalThis as unknown as { crypto: { randomUUID(): string } }).crypto;
-  return webCrypto.randomUUID();
+  try {
+    const webCrypto = (
+      globalThis as unknown as { crypto?: { randomUUID?: () => string } }
+    ).crypto;
+    const uuid = webCrypto?.randomUUID?.();
+    if (typeof uuid === "string" && uuid.length > 0) return uuid;
+  } catch {
+    // Fall through to the shaped fallback below.
+  }
+  return fallbackId();
+}
+
+/** UUIDv4-shaped id (version + variant bits set) without Web Crypto. */
+function fallbackId(): string {
+  const hex = Array.from({ length: 32 }, () =>
+    Math.floor(Math.random() * 16).toString(16),
+  );
+  hex[12] = "4";
+  hex[16] = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const s = hex.join("");
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
 }
 
 function pushTurn(s: Session, who: "system" | "you", text: string, kind?: string): void {
