@@ -67,3 +67,28 @@ test("clean verifies, tampered rejects, no-meta parity", async () => {
   const withMeta = await runFixture("aus-passport-clean", {meta: true});
   assert.equal(withMeta.decision, clean.decision);
 });
+
+test("revoke consent normalises to deny and purges captures", async () => {
+  const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
+  assert.equal(created.status, 200);
+  const id = created.body.sessionId;
+  await post(`/api/session/${id}/say`, { utterance: "I consent" });
+  await post(`/api/session/${id}/signal`, { event: "front_captured" });
+  await post(`/api/session/${id}/signal`, { event: "frames_done" });
+  const revoked = await post(`/api/session/${id}/say`, { utterance: "revoke consent" });
+  assert.equal(revoked.body.intent, "deny");
+  assert.equal(revoked.body.stage, "idle");
+  assert.deepEqual(revoked.body.captures, []);
+  assert.equal(revoked.body.capturesPurged, true);
+});
+
+test("session decisions equal report decisions per fixture (shared measurements)", async () => {
+  for (const fixtureId of ["aus-passport-clean", "aus-passport-tampered-digit", "nsw-dl-clean"]) {
+    const viaSession = await runFixture(fixtureId, { meta: false });
+    const res = await app.request(`/api/run/${fixtureId}`);
+    assert.equal(res.status, 200);
+    const viaReport = await res.json();
+    assert.equal(viaSession.decision, viaReport.decision);
+    assert.equal(viaSession.report.tier, viaReport.tier);
+  }
+});

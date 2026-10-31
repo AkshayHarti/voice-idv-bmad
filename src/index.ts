@@ -13,14 +13,13 @@
 // Avoid: not liveness, not forgery proof, not certified matching — the
 // limitations below are negations, the only permitted form (spec §1).
 import { Hono } from "hono";
-import { parseNSWDL } from "./au_dl.js";
 import { decide, runChecks } from "./checks.js";
-import type { CheckResult, Decision, Measurements } from "./checks.js";
+import type { CheckResult, Decision } from "./checks.js";
 import { verifyDVS } from "./dvs.js";
 import { loadFixture } from "./fixtures.js";
 import { say, signal, startRun } from "./flow.js";
 import type { FlowState } from "./flow.js";
-import { parseTD3 } from "./mrz.js";
+import { buildMeasurements } from "./measurements.js";
 import { configuredProviders, narrate } from "./providers.js";
 import { tier } from "./fraud.js";
 import type { Tier } from "./fraud.js";
@@ -38,9 +37,6 @@ export function processEnv(): Record<string, string | undefined> {
 const app = new Hono();
 
 app.get("/", (c) => c.text(hello()));
-
-/** Demo run date (ISO); expiry comparisons baseline here, not wall-clock. */
-const RUN_TODAY = "2026-10-31";
 
 /** Fixture ids served by this demo slice (100% synthetic). */
 const RUN_IDS = [
@@ -60,42 +56,6 @@ const LIMITATIONS = [
   "Not forgery proof — splice-not-found is not authenticity.",
   "Uncertified match — face similarity is a value + band, uncertified.",
 ];
-
-/** Build check-engine measurements from fixture ground truth (demo only). */
-function buildMeasurements(fixtureId: string): Measurements {
-  const fx = loadFixture(fixtureId);
-  if (fx.kind === "au_passport") {
-    const parsed = parseTD3(fx.mrz_lines[0], fx.mrz_lines[1]);
-    return {
-      kind: "au_passport",
-      mrz_lines: fx.mrz_lines,
-      viz: {
-        passportNumber: parsed.passportNumber,
-        dob: parsed.dob,
-        expiry: parsed.expiry,
-      },
-      dl: null,
-      today: RUN_TODAY,
-      image_quality_inconclusive: false,
-      portrait_present: true,
-      splice_found: false,
-      face: { similarity: 0.81, band: "high", certified: false },
-      challenge_completed: true,
-    };
-  }
-  return {
-    kind: "au_dl",
-    mrz_lines: null,
-    viz: null,
-    dl: parseNSWDL(fx.front, fx.back),
-    today: RUN_TODAY,
-    image_quality_inconclusive: false,
-    portrait_present: true,
-    splice_found: false,
-    face: { similarity: 0.81, band: "high", certified: false },
-    challenge_completed: true,
-  };
-}
 
 function rankOutcome(r: CheckResult["result"]): number {
   if (r === "fail") return 0;
@@ -162,9 +122,10 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 
-const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+/** Unpredictable session ids via Web Crypto (Node 19+ and Workers). */
 function sessionId(): string {
-  return Array.from({ length: 12 }, () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)]).join("");
+  const webCrypto = (globalThis as unknown as { crypto: { randomUUID(): string } }).crypto;
+  return webCrypto.randomUUID();
 }
 
 function pushTurn(s: Session, who: "system" | "you", text: string, kind?: string): void {

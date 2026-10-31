@@ -9,10 +9,9 @@
 // Consumes `runChecks`, `decide` (Task 3), `verifyDVS` (Task 4),
 // `tier` (Task 4). Produces `startRun`, `say`, `signal`, 10-stage type.
 import { decide, runChecks } from "./checks.js";
-import type { Decision, Measurements } from "./checks.js";
-import { parseNSWDL } from "./au_dl.js";
+import type { Decision } from "./checks.js";
 import { loadFixture } from "./fixtures.js";
-import { parseTD3 } from "./mrz.js";
+import { buildMeasurements } from "./measurements.js";
 import { verifyDVS } from "./dvs.js";
 import { tier } from "./fraud.js";
 import type { TierResult } from "./fraud.js";
@@ -96,7 +95,7 @@ export function matchIntent(text: string): Intent {
   if (/\brepeat\b|\bagain\b|say again|pardon|come again/.test(t)) return "repeat";
   if (/\bhelp\b|\bhow\b|confused|what do i|don't understand/.test(t)) return "help";
   if (
-    /\bnot ready\b|\bnot yet\b|\bno\b|\bdeny\b|\bdon't\b|\bdo not\b|\bstop\b|\bcancel\b|not consent/.test(
+    /\bnot ready\b|\bnot yet\b|\bno\b|\bdeny\b|\bdon't\b|\bdo not\b|\bstop\b|\bcancel\b|not consent|\brevoke\b|\bwithdraw\b|\bdelete\b/.test(
       t,
     )
   ) {
@@ -184,45 +183,6 @@ export function say(s: FlowState, text: string): FlowState {
   }
 }
 
-/** Demo run date (ISO); expiry comparisons baseline here, not wall-clock. */
-const RUN_TODAY = "2026-10-31";
-
-/** Build check-engine measurements from fixture ground truth (demo only). */
-function measurementsFor(fixtureId: string): Measurements {
-  const fx = loadFixture(fixtureId);
-  if (fx.kind === "au_passport") {
-    const parsed = parseTD3(fx.mrz_lines[0], fx.mrz_lines[1]);
-    return {
-      kind: "au_passport",
-      mrz_lines: fx.mrz_lines,
-      viz: {
-        passportNumber: parsed.passportNumber,
-        dob: parsed.dob,
-        expiry: parsed.expiry,
-      },
-      dl: null,
-      today: RUN_TODAY,
-      image_quality_inconclusive: false,
-      portrait_present: true,
-      splice_found: false,
-      face: { similarity: 0.81, band: "high", certified: false },
-      challenge_completed: true,
-    };
-  }
-  return {
-    kind: "au_dl",
-    mrz_lines: null,
-    viz: null,
-    dl: parseNSWDL(fx.front, fx.back),
-    today: RUN_TODAY,
-    image_quality_inconclusive: false,
-    portrait_present: true,
-    splice_found: false,
-    face: { similarity: 0.81, band: "high", certified: false },
-    challenge_completed: true,
-  };
-}
-
 /** True when this DL run is missing its mandatory back capture. */
 function backMissing(s: FlowState): boolean {
   try {
@@ -243,7 +203,7 @@ function isPassport(s: FlowState): boolean {
 
 /** Run the deterministic pipeline on entering `comparing`. */
 function enterComparing(s: FlowState): FlowState {
-  const m = measurementsFor(s.fixture);
+  const m = buildMeasurements(s.fixture);
   const results = runChecks(m);
   const decision = decide(results);
   const dvs = verifyDVS({ fixture: s.fixture });
