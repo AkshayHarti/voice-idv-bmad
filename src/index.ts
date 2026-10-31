@@ -156,11 +156,11 @@ function pushTurn(s: Session, who: "system" | "you", text: string, kind?: string
 }
 
 async function narrated(turn: string, text: string) {
-  const { text: spoken, provider } = await narrate(
+  const { text: spoken, provider, skipped } = await narrate(
     { turn, text },
     { env: processEnv() },
   );
-  return { text: spoken, provider };
+  return { text: spoken, provider, skipped };
 }
 
 app.get("/api/runs", (c) =>
