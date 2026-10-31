@@ -163,8 +163,16 @@ export function say(s: FlowState, text: string): FlowState {
           text: s.last_turn?.text ?? "Let me repeat that. Hold your document up to the camera.",
         },
       };
-    case "help":
-      return { ...base, last_turn: instructTurn(s.fixture, "front") };
+    case "help": {
+      // Context-aware: when the run is waiting on the back of the card,
+      // re-instruct the back capture (Card Number), not the front.
+      const needsBack =
+        s.stage === "awaiting_doc_back" || s.stage === "reading_back";
+      return {
+        ...base,
+        last_turn: instructTurn(s.fixture, needsBack ? "back" : "front"),
+      };
+    }
     case "unknown":
       return {
         ...base,
