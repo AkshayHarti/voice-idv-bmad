@@ -60,6 +60,32 @@ test("image_quality inconclusive never approves", () => {
   assert.equal(decide(r), "not_verified");
 });
 
+test("mrz_viz_match fails on viz disagreement with front-vs-sticker-style evidence", () => {
+  const m = measurementsFor("aus-passport-clean");
+  // Alter viz passportNumber so it disagrees with its MRZ parse.
+  const last = m.viz.passportNumber.slice(-1);
+  m.viz.passportNumber = `${m.viz.passportNumber.slice(0, -1)}${last === "0" ? "1" : "0"}`;
+  const r = runChecks(m);
+  const viz = r.find(c => c.id === "mrz_viz_match");
+  assert.equal(viz.result, "fail");
+  assert.match(viz.evidence, /vs/);
+  assert.equal(decide(r), "rejected");
+});
+
+test("out-of-charset MRZ fails closed: char_set fail, rejected, no throw", () => {
+  const m = measurementsFor("aus-passport-clean");
+  m.mrz_lines = [m.mrz_lines[0], `*${m.mrz_lines[1].slice(1)}`];
+  let r;
+  assert.doesNotThrow(() => { r = runChecks(m); });
+  const charset = r.find(c => c.id === "char_set");
+  assert.equal(charset.result, "fail");
+  // No raw MRZ in evidence: charset + fail-closed fill-ins carry only redacted refs.
+  for (const c of r) {
+    assert.doesNotMatch(c.evidence, /\*/);
+  }
+  assert.equal(decide(r), "rejected");
+});
+
 test("NSW DL back checks: missing card fails; sticker mismatch fails", () => {
   assert.equal(decide(runChecks(measurementsFor("nsw-dl-clean"))), "verified");
   const missing = runChecks(measurementsFor("nsw-dl-missing-back"));

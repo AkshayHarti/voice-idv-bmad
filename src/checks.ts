@@ -108,57 +108,84 @@ export function runChecks(m: Measurements): CheckResult[] {
     const dob = l2.slice(13, 19);
     const expiry = l2.slice(21, 27);
     const personal = l2.slice(28, 42);
-    const docCases: Array<[string, string, string]> = [
-      ["check_digit_docnum", doc, l2.slice(9, 10)],
-      ["check_digit_dob", dob, l2.slice(19, 20)],
-      ["check_digit_expiry", expiry, l2.slice(27, 28)],
-    ];
-    for (const [id, content, printed] of docCases) {
+    try {
+      const docCases: Array<[string, string, string]> = [
+        ["check_digit_docnum", doc, l2.slice(9, 10)],
+        ["check_digit_dob", dob, l2.slice(19, 20)],
+        ["check_digit_expiry", expiry, l2.slice(27, 28)],
+      ];
+      for (const [id, content, printed] of docCases) {
+        out.push({
+          id,
+          result: checkDigit(content) === printed ? "pass" : "fail",
+          evidence: digitEvidence(id, content, printed),
+        });
+      }
+      const compositeContent =
+        doc +
+        l2.slice(9, 10) +
+        dob +
+        l2.slice(19, 20) +
+        expiry +
+        l2.slice(27, 28) +
+        personal +
+        l2.slice(42, 43);
+      const compositePrinted = l2.slice(43, 44);
       out.push({
-        id,
-        result: checkDigit(content) === printed ? "pass" : "fail",
-        evidence: digitEvidence(id, content, printed),
+        id: "check_digit_composite",
+        result: checkDigit(compositeContent) === compositePrinted ? "pass" : "fail",
+        evidence: digitEvidence("check_digit_composite", compositeContent, compositePrinted),
       });
-    }
-    const compositeContent =
-      doc +
-      l2.slice(9, 10) +
-      dob +
-      l2.slice(19, 20) +
-      expiry +
-      l2.slice(27, 28) +
-      personal +
-      l2.slice(42, 43);
-    const compositePrinted = l2.slice(43, 44);
-    out.push({
-      id: "check_digit_composite",
-      result: checkDigit(compositeContent) === compositePrinted ? "pass" : "fail",
-      evidence: digitEvidence("check_digit_composite", compositeContent, compositePrinted),
-    });
-    if (m.viz === null) {
-      na("mrz_viz_match", "no viz");
-    } else {
-      const parsed = parseTD3(l1, l2);
-      const mismatches: string[] = [];
-      if (m.viz.passportNumber !== parsed.passportNumber) {
-        mismatches.push(
-          `passport_number viz ${redactRef("passport_number", m.viz.passportNumber)} vs mrz ${redactRef("passport_number", parsed.passportNumber)}`,
-        );
+      if (m.viz === null) {
+        na("mrz_viz_match", "no viz");
+      } else {
+        const parsed = parseTD3(l1, l2);
+        const mismatches: string[] = [];
+        if (m.viz.passportNumber !== parsed.passportNumber) {
+          mismatches.push(
+            `passport_number viz ${redactRef("passport_number", m.viz.passportNumber)} vs mrz ${redactRef("passport_number", parsed.passportNumber)}`,
+          );
+        }
+        if (m.viz.dob !== parsed.dob) {
+          mismatches.push(`dob viz vs mrz mismatch`);
+        }
+        if (m.viz.expiry !== parsed.expiry) {
+          mismatches.push(`expiry viz vs mrz mismatch`);
+        }
+        out.push({
+          id: "mrz_viz_match",
+          result: mismatches.length === 0 ? "pass" : "fail",
+          evidence:
+            mismatches.length === 0
+              ? `viz agrees with mrz (${redactRef("passport_number", parsed.passportNumber)})`
+              : mismatches.join("; "),
+        });
       }
-      if (m.viz.dob !== parsed.dob) {
-        mismatches.push(`dob viz vs mrz mismatch`);
+    } catch {
+      // Fail-closed on out-of-charset input: charValue throws on chars
+      // outside A-Z0-9<. char_set already records fail above; dependent
+      // TD3 checks fail here with redacted evidence (never raw MRZ, never throw).
+      for (const id of [
+        "check_digit_docnum",
+        "check_digit_dob",
+        "check_digit_expiry",
+        "check_digit_composite",
+      ]) {
+        if (!out.some((c) => c.id === id)) {
+          out.push({ id, result: "fail", evidence: `${id} skipped: charset fail (redacted)` });
+        }
       }
-      if (m.viz.expiry !== parsed.expiry) {
-        mismatches.push(`expiry viz vs mrz mismatch`);
+      if (!out.some((c) => c.id === "mrz_viz_match")) {
+        if (m.viz === null) {
+          na("mrz_viz_match", "no viz");
+        } else {
+          out.push({
+            id: "mrz_viz_match",
+            result: "fail",
+            evidence: "viz comparison skipped: charset fail (redacted)",
+          });
+        }
       }
-      out.push({
-        id: "mrz_viz_match",
-        result: mismatches.length === 0 ? "pass" : "fail",
-        evidence:
-          mismatches.length === 0
-            ? `viz agrees with mrz (${redactRef("passport_number", parsed.passportNumber)})`
-            : mismatches.join("; "),
-      });
     }
   }
 
