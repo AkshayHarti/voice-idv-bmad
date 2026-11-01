@@ -13,6 +13,8 @@
 // Avoid: not liveness, not forgery proof, not certified matching — the
 // limitations below are negations, the only permitted form (spec §1).
 import { Hono } from "hono";
+import { generateAudit } from "./audit.js";
+import type { AuditDeps } from "./audit.js";
 import { decide, runChecks } from "./checks.js";
 import type { CheckResult, Decision } from "./checks.js";
 import { verifyDVS } from "./dvs.js";
@@ -20,7 +22,9 @@ import { loadFixture } from "./fixtures.js";
 import { say, signal, startRun } from "./flow.js";
 import type { FlowState } from "./flow.js";
 import { buildMeasurements } from "./measurements.js";
-import { configuredProviders, narrate } from "./providers.js";
+import { spendTotal } from "./meta-models.js";
+import { configuredProviders, narrate, segment } from "./providers.js";
+import type { ProviderName } from "./providers.js";
 import { tier } from "./fraud.js";
 import type { Tier } from "./fraud.js";
 
@@ -76,6 +80,8 @@ export interface Report {
   /** Real reasons live here only (queue reviewers, never the caller). */
   queue: { reasons: string[] };
   limitations: string[];
+  /** Adversarial audit; present on the --meta path only (annotation, never a check input). */
+  audit?: { hypotheses: [string, string, string]; provider: ProviderName };
 }
 
 /**
@@ -102,6 +108,46 @@ export function evaluateFixture(fixtureId: string): Report {
     userMessage: tiered.userMessage,
     queue: { reasons: [...tiered.queue.reasons] },
     limitations: [...LIMITATIONS],
+  };
+}
+
+export interface MetaReport extends Report {
+  audit: { hypotheses: [string, string, string]; provider: ProviderName };
+  meta: {
+    narration: { provider: ProviderName; skipped: string[] };
+    segmentation: { provider: ProviderName; skipped: string[] };
+  };
+  spend: { total: number };
+}
+
+/**
+ * The `--meta` path: the deterministic report plus live narration,
+ * segmentation, and the 3-hypothesis adversarial audit. Decisions come
+ * from the same `evaluateFixture` core, so `--meta` and `--no-meta`
+ * decide identically by construction; models only annotate.
+ */
+export async function evaluateFixtureMeta(
+  fixtureId: string,
+  deps: AuditDeps = {},
+): Promise<MetaReport> {
+  const report = evaluateFixture(fixtureId);
+  const bound = { env: deps.env ?? processEnv(), fetcher: deps.fetcher };
+  const [audit, narration, segmentation] = await Promise.all([
+    generateAudit(report.failedFirst, report.decision, bound),
+    narrate(
+      { turn: "result", text: `Decision for ${fixtureId}: ${report.decision}.` },
+      bound,
+    ),
+    segment({ label: "document quad" }, [], bound),
+  ]);
+  return {
+    ...report,
+    audit: { hypotheses: audit.hypotheses, provider: audit.provider },
+    meta: {
+      narration: { provider: narration.provider, skipped: narration.skipped },
+      segmentation: { provider: segmentation.provider, skipped: segmentation.skipped },
+    },
+    spend: { total: spendTotal() },
   };
 }
 
@@ -176,13 +222,14 @@ app.get("/api/runs", (c) =>
   ),
 );
 
-app.get("/api/run/:id", (c) => {
+app.get("/api/run/:id", async (c) => {
   const id = c.req.param("id");
   try {
     loadFixture(id);
   } catch {
     return c.json({ error: "unknown_fixture", id }, 404);
   }
+  if (c.req.query("meta")) return c.json(await evaluateFixtureMeta(id));
   return c.json(evaluateFixture(id));
 });
 
@@ -335,6 +382,10 @@ const PAGE = `<!doctype html>
           color:inherit; padding:.6rem .8rem; font:inherit; font-size:.85rem; }
   input:focus { outline:2px solid #35507e; outline-offset:1px; }
   .note { color:var(--dim); font-size:.78rem; margin-top:2rem; border-top:1px solid var(--line); padding-top:1rem; }
+  details { font-size:.85rem; margin-top:.4rem; }
+  summary { cursor:pointer; }
+  details ol { list-style:decimal; padding-left:1.4rem; }
+  details li { display:list-item; border-bottom:1px solid var(--line); padding:.3rem 0; }
   #tiermsg { font-size:1rem; margin:.4rem 0; }
 </style>
 
@@ -451,6 +502,25 @@ async function post(path, body) {
   return res.json();
 }
 
+function auditPanel(audit) {
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = '3 attack hypotheses (' + (audit.provider === 'meta' ? 'Spark' : 'local templates') + ')';
+  details.append(summary);
+  const list = document.createElement('ol');
+  for (const h of audit.hypotheses) {
+    const li = document.createElement('li');
+    li.textContent = h;                 // textContent only: never innerHTML
+    list.append(li);
+  }
+  details.append(list);
+  const note = document.createElement('p');
+  note.className = 'note';
+  note.textContent = 'Annotations only — the Decision above comes from deterministic checks.';
+  details.append(note);
+  return details;
+}
+
 function renderReport(report) {
   decisionEl.textContent = report.decision;
   decisionEl.className = report.decision === 'verified' ? 'pass'
@@ -493,6 +563,33 @@ function renderReport(report) {
     lulum.append(li);
   }
   checksEl.append(lulum);
+
+  const auditH = document.createElement('h2');
+  auditH.textContent = 'attack surface';
+  checksEl.append(auditH);
+  const auditBox = document.createElement('div');
+  checksEl.append(auditBox);
+  if (report.audit) {
+    auditBox.append(auditPanel(report.audit));
+  } else {
+    // On-demand so a slow model call never delays the Decision screen.
+    const b = document.createElement('button');
+    b.textContent = 'Run adversarial audit';
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      b.textContent = 'Auditing…';
+      try {
+        const res = await fetch('/api/run/' + report.fixture + '?meta=1');
+        if (!res.ok) throw new Error('audit -> ' + res.status);
+        const meta = await res.json();
+        auditBox.replaceChildren(auditPanel(meta.audit));
+      } catch {
+        b.disabled = false;
+        b.textContent = 'Run adversarial audit';
+      }
+    });
+    auditBox.append(b);
+  }
 }
 
 function pause(ms) { return new Promise(r => setTimeout(r, ms)); }
