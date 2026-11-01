@@ -8,5 +8,6 @@ this file is the durable, human-audited record.
 | Date (UTC) | Task | Model | Calls | Est. cost (USD) | Running total (USD) | Notes |
 |---|---|---|---|---|---|---|
 | 2026-11-01 | 0 | — | 0 | 0.00 | 0.00 | Live probe blocked: sandbox egress outage (all api.meta.ai calls hang, auth or not). IDs/prices in `src/meta-models.ts` are UNVERIFIED candidates. Re-probe in Task 4. |
+| 2026-11-01 | 1 | sam-3 | 0 | 0.00 | 0.00 | Meta branch verified via stub fetchers only; no live calls (egress still down). |
 
 Running total: **$0.00**
