@@ -36,7 +36,7 @@ interface ChainDeps {
   env?: Record<string, string | undefined>;
 }
 
-const META_BASE = "https://api.meta.ai/v1";
+export const META_BASE = "https://api.meta.ai/v1";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const REPLICATE_BASE = "https://api.replicate.com/v1";
 
@@ -57,7 +57,7 @@ export function configuredProviders(
   };
 }
 
-async function postJson(
+export async function postJson(
   fetcher: Fetcher,
   url: string,
   headers: Record<string, string>,
@@ -80,7 +80,7 @@ async function postJson(
   }
 }
 
-function responseText(payload: unknown): string | null {
+export function responseText(payload: unknown): string | null {
   const data = payload as {
     output_text?: string;
     choices?: Array<{ message?: { content?: string } }>;
@@ -110,7 +110,7 @@ export async function narrate(
         `${META_BASE}/responses`,
         { authorization: `Bearer ${env.META_API_KEY}` },
         {
-          model: env.META_TEXT_MODEL ?? "muse-spark-1.3",
+          model: env.META_TEXT_MODEL ?? META_MODELS.spark,
           input:
             `You are the voice of an identity verification flow. Reply with one ` +
             `spoken sentence, at most 30 words, no markdown. ` +
@@ -135,7 +135,7 @@ export async function narrate(
         `${OPENROUTER_BASE}/chat/completions`,
         { authorization: `Bearer ${env.OPENROUTER_API_KEY}` },
         {
-          model: env.OPENROUTER_TEXT_MODEL ?? "meta/muse-spark-1.3",
+          model: env.OPENROUTER_TEXT_MODEL ?? `meta/${META_MODELS.spark}`,
           max_tokens: 80,
           messages: [
             {
