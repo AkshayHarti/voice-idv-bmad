@@ -10,6 +10,10 @@
 // block; hard-flag runs show the generic user string while the real reasons
 // live only in the queue object (Task 4 ruling). Transcript mirrors every
 // Turn on one single page.
+// Goal 2: live Capture surface behind a telemetry/coach loop
+// (POST /api/session/:id/telemetry), lock/keep/retake capture flow, and
+// Turn-bound generated panels on every step. The fixture stand-in stays
+// behind Capture for denied/unavailable cameras and projection.
 // Avoid: not liveness, not forgery proof, not certified matching — the
 // limitations below are negations, the only permitted form (spec §1).
 import { Hono } from "hono";
@@ -19,12 +23,15 @@ import { decide, runChecks } from "./checks.js";
 import type { CheckResult, Decision } from "./checks.js";
 import { verifyDVS } from "./dvs.js";
 import { loadFixture } from "./fixtures.js";
-import { say, signal, startRun } from "./flow.js";
-import type { FlowState } from "./flow.js";
+import { CAPTURE_STAGES, captureInstruct, say, signal, startRun, withPanel } from "./flow.js";
+import type { FlowState, Stage } from "./flow.js";
 import { buildMeasurements } from "./measurements.js";
 import { spendTotal } from "./meta-models.js";
-import { configuredProviders, narrate, segment } from "./providers.js";
+import { generatePanel } from "./panels.js";
+import { configuredProviders, narrate, segment, templateNarration } from "./providers.js";
 import type { ProviderName } from "./providers.js";
+import { coach, FAULT_KEYS, faultKey, isLockReady } from "./telemetry.js";
+import type { FaultKey, Telemetry } from "./telemetry.js";
 import { tier } from "./fraud.js";
 import type { Tier } from "./fraud.js";
 
@@ -160,13 +167,61 @@ interface TranscriptLine {
 interface Session {
   flow: FlowState;
   fixture: string;
-  /** Capture refs (synthetic fixture ids). Deny/revoke deletes them. */
+  /** Capture refs (synthetic fixture ids / opaque lock refs). Deny/revoke deletes them. */
   captures: string[];
   /** Mirrors every Turn plus every subject utterance. */
   transcript: TranscriptLine[];
+  /** Consecutive-sample streak per fault (drives warn escalation). */
+  faultCounts: Record<FaultKey, number>;
+  /** Persistent moiré-flag counter (seam for deferred fraud inputs). */
+  moireFlags: number;
+  /** Last announced coach text (repeat-episode suppression). */
+  lastCoachText: string | null;
+  /** Locked capture awaiting Keep/Retake (opaque server-generated ref). */
+  pendingCapture: string | null;
+  captureSeq: number;
 }
 
 const sessions = new Map<string, Session>();
+
+function zeroFaultCounts(): Record<FaultKey, number> {
+  return {
+    screenshot: 0,
+    moire: 0,
+    missingBack: 0,
+    glare: 0,
+    finger: 0,
+    skew: 0,
+    dark: 0,
+  };
+}
+
+/**
+ * Full deny/revoke purge: captures and the pending lock are deleted, and
+ * the coach streak + suppression state reset so an in-session restart
+ * never inherits a streak toward an instant warn. Fraud flags
+ * (moireFlags) are kept: Rev 2 §8 purges captures and crops, not flags.
+ */
+function purgeCaptures(session: Session): void {
+  session.captures = [];
+  session.pendingCapture = null;
+  session.faultCounts = zeroFaultCounts();
+  session.lastCoachText = null;
+}
+
+function newSession(fixtureId: string): Session {
+  return {
+    flow: startRun(fixtureId),
+    fixture: fixtureId,
+    captures: [],
+    transcript: [],
+    faultCounts: zeroFaultCounts(),
+    moireFlags: 0,
+    lastCoachText: null,
+    pendingCapture: null,
+    captureSeq: 0,
+  };
+}
 
 /**
  * Session ids: Web Crypto UUID primary; a UUIDv4-shaped Math.random id
@@ -197,6 +252,15 @@ function fallbackId(): string {
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
 }
 
+/** Opaque server-generated capture ref (never accepted back for verify). */
+function lockRef(session: Session): string {
+  session.captureSeq += 1;
+  const hex = Array.from({ length: 6 }, () =>
+    Math.floor(Math.random() * 16).toString(16),
+  ).join("");
+  return `cap_${session.captureSeq}_${hex}`;
+}
+
 function pushTurn(s: Session, who: "system" | "you", text: string, kind?: string): void {
   s.transcript.push({ who, text, kind });
 }
@@ -208,6 +272,26 @@ async function narrated(turn: string, text: string) {
   );
   return { text: spoken, provider, skipped };
 }
+
+/** Capture-stage → backend signal (the stage advance behind Keep). */
+const CAPTURE_EVENT: Partial<Record<Stage, string>> = {
+  awaiting_doc_front: "front_captured",
+  awaiting_doc_back: "back_captured",
+  awaiting_challenge: "challenge_done",
+  awaiting_selfie: "selfie_captured",
+};
+
+/** Lock-confirm spoken text per capture stage (always announced). */
+const LOCK_TEXT: Record<string, string> = {
+  awaiting_doc_front: "Good framing — captured front. Keep it, or retake?",
+  awaiting_doc_back: "Got the back — captured. Keep it, or retake?",
+  awaiting_challenge: "Challenge frames captured. Keep them, or retake?",
+  awaiting_selfie: "Selfie captured. Keep it, or retake?",
+};
+
+/** Voice equivalents for the retake pair while a lock is pending. */
+const KEEP_UTTERANCE = /^\s*keep(\s+it)?\s*\.?\s*$/i;
+const RETAKE_UTTERANCE = /^\s*(retake|take (it |that )?again)\s*\.?\s*$/i;
 
 app.get("/api/runs", (c) =>
   c.json(
@@ -235,6 +319,43 @@ app.get("/api/run/:id", async (c) => {
 
 app.get("/api/providers", (c) => c.json(configuredProviders(processEnv())));
 
+/** Standard step body: Turn payload plus its generated panel. */
+async function stepBody(
+  session: Session,
+  id: string,
+  intent: FlowState["last_intent"] | null,
+  advanced: boolean,
+  templateNarrationOnly = false,
+) {
+  const turn = session.flow.last_turn;
+  const kind = turn?.kind ?? "progress";
+  const text = turn?.text ?? "";
+  // Suppressed telemetry repeats never touch the model chain: the client
+  // discards their narration, so template text is the honest response.
+  const narration = templateNarrationOnly
+    ? {
+        text: templateNarration(kind, text),
+        provider: "local" as const,
+        skipped: ["model: suppressed repeat-episode"],
+      }
+    : await narrated(kind, text);
+  return {
+    sessionId: id,
+    stage: session.flow.stage,
+    turn: turn?.kind ?? null,
+    text,
+    intent,
+    advanced,
+    narration,
+    transcript: session.transcript,
+    captures: session.captures,
+    capturesPurged: session.flow.capturesPurged,
+    report: reportFor(session),
+    panel: turn?.panel ?? generatePanel(kind, session.flow.stage, { text }),
+    pendingCapture: session.pendingCapture,
+  };
+}
+
 app.post("/api/session", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { fixtureId?: string };
   const fixtureId = body.fixtureId ?? RUN_IDS[0];
@@ -245,33 +366,59 @@ app.post("/api/session", async (c) => {
   }
 
   const id = sessionId();
-  const flow = startRun(fixtureId);
-  const session: Session = { flow, fixture: fixtureId, captures: [], transcript: [] };
-  pushTurn(session, "system", flow.last_turn?.text ?? "", flow.last_turn?.kind);
+  const session = newSession(fixtureId);
+  pushTurn(session, "system", session.flow.last_turn?.text ?? "", session.flow.last_turn?.kind);
   sessions.set(id, session);
-
-  const narration = await narrated(
-    flow.last_turn?.kind ?? "consent",
-    flow.last_turn?.text ?? "",
-  );
-  return c.json({
-    sessionId: id,
-    stage: flow.stage,
-    turn: flow.last_turn?.kind ?? null,
-    text: flow.last_turn?.text ?? "",
-    intent: null,
-    advanced: true,
-    narration,
-    transcript: session.transcript,
-    captures: session.captures,
-    capturesPurged: flow.capturesPurged,
-    report: null,
-  });
+  return c.json(await stepBody(session, id, null, true));
 });
 
 function reportFor(session: Session): Report | null {
   if (session.flow.stage !== "decided") return null;
   return evaluateFixture(session.fixture);
+}
+
+/** Keep the pending lock: stage-verified, then the backend signal advances. */
+async function doKeep(session: Session, id: string, viaVoice: string | null) {
+  if (session.pendingCapture === null) {
+    return { status: 409 as const, body: { error: "nothing_to_keep" } };
+  }
+  const event = CAPTURE_EVENT[session.flow.stage];
+  if (!event) {
+    return {
+      status: 409 as const,
+      body: { error: "wrong_stage", stage: session.flow.stage },
+    };
+  }
+  session.captures.push(session.pendingCapture);
+  session.pendingCapture = null;
+  pushTurn(session, "you", viaVoice ?? "Keep");
+  const before = session.flow.stage;
+  session.flow = signal(session.flow, event);
+  if (session.flow.stage !== before) session.lastCoachText = null;
+  pushTurn(
+    session,
+    "system",
+    session.flow.last_turn?.text ?? "",
+    session.flow.last_turn?.kind,
+  );
+  return {
+    status: 200 as const,
+    body: await stepBody(session, id, null, session.flow.stage !== before),
+  };
+}
+
+/** Retake the pending lock: discard it, re-instruct, hold the stage. */
+async function doRetake(session: Session, id: string, viaVoice: string | null) {
+  if (session.pendingCapture === null) {
+    // No phantom Turn, no last_turn clobber — just the conflict.
+    return { status: 409 as const, body: { error: "nothing_to_retake" } };
+  }
+  session.pendingCapture = null;
+  pushTurn(session, "you", viaVoice ?? "Retake");
+  const turn = captureInstruct(session.flow);
+  session.flow = { ...session.flow, last_turn: turn };
+  pushTurn(session, "system", turn.text, turn.kind);
+  return { status: 200 as const, body: await stepBody(session, id, null, false) };
 }
 
 app.post("/api/session/:id/say", async (c) => {
@@ -280,28 +427,36 @@ app.post("/api/session/:id/say", async (c) => {
 
   const body = (await c.req.json().catch(() => ({}))) as { utterance?: string };
   const utterance = body.utterance ?? "";
+  // Voice equivalents for the open retake pair (closed intents untouched;
+  // the advance still runs through the backend signal inside doKeep).
+  if (session.pendingCapture !== null && KEEP_UTTERANCE.test(utterance)) {
+    const kept = await doKeep(session, c.req.param("id"), utterance);
+    return c.json(kept.body, kept.status);
+  }
+  if (session.pendingCapture !== null && RETAKE_UTTERANCE.test(utterance)) {
+    const retaken = await doRetake(session, c.req.param("id"), utterance);
+    return c.json(retaken.body, retaken.status);
+  }
+  // Embedded or negated pair phrasing ("don't retake") holds the pair open:
+  // no advance, no discard, no lock-turn clobber — and it never reaches
+  // matchIntent, where "don't" would read as deny and purge the run.
+  if (
+    session.pendingCapture !== null &&
+    /retake|take\s+(it\s+|that\s+)?again/i.test(utterance)
+  ) {
+    pushTurn(session, "you", utterance);
+    return c.json(await stepBody(session, c.req.param("id"), null, false));
+  }
   const before = session.flow.stage;
   const next = say(session.flow, utterance);
   session.flow = next;
   // Full deny purge: captures are deleted on deny/revoke, not flagged.
-  if (next.last_intent === "deny") session.captures = [];
+  if (next.last_intent === "deny") purgeCaptures(session);
+  if (next.stage !== before) session.lastCoachText = null;
 
   pushTurn(session, "you", utterance);
   pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
-  const narration = await narrated(next.last_turn?.kind ?? "re-ask", next.last_turn?.text ?? "");
-  return c.json({
-    sessionId: c.req.param("id"),
-    stage: next.stage,
-    turn: next.last_turn?.kind ?? null,
-    text: next.last_turn?.text ?? "",
-    intent: next.last_intent,
-    advanced: next.stage !== before,
-    narration,
-    transcript: session.transcript,
-    captures: session.captures,
-    capturesPurged: next.capturesPurged,
-    report: reportFor(session),
-  });
+  return c.json(await stepBody(session, c.req.param("id"), next.last_intent, next.stage !== before));
 });
 
 app.post("/api/session/:id/signal", async (c) => {
@@ -318,23 +473,175 @@ app.post("/api/session/:id/signal", async (c) => {
     if (event === "front_captured") session.captures.push(`front:${session.fixture}`);
     if (event === "back_captured") session.captures.push(`back:${session.fixture}`);
     if (event === "selfie_captured") session.captures.push(`selfie:${session.fixture}`);
+    // A stage advance retires the old guidance (same fault re-announces)
+    // and any lock the advance left behind (fail-closed, UI-unreachable).
+    session.lastCoachText = null;
+    session.pendingCapture = null;
   }
 
   pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
-  const narration = await narrated(next.last_turn?.kind ?? "progress", next.last_turn?.text ?? "");
+  return c.json(await stepBody(session, c.req.param("id"), null, next.stage !== before));
+});
+
+function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * Telemetry/coach loop. One client-computed sample in; coached Turn,
+ * lock-readiness, and the announced flag out. Speech is throttled to one
+ * instruction per fault episode (repeats return announced:false and leave
+ * the transcript alone); the 3rd consecutive fault escalates to `warn`.
+ * Telemetry never advances the stage — the run parks under warn.
+ */
+async function handleTelemetry(c: {
+  req: {
+    param: (name: string) => string;
+    json: () => Promise<unknown>;
+  };
+  json: (body: unknown, status?: number) => Response;
+}) {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "unknown_session" }, 404);
+
+  const body = ((await c.req.json().catch(() => ({}))) ?? {}) as Record<
+    string,
+    unknown
+  >;
+  if (body.denied || body.cameraDenied) {
+    const next = signal(session.flow, "camera_denied");
+    session.flow = next;
+    pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
+    const step = await stepBody(session, c.req.param("id"), null, false);
+    return c.json({
+      ...step,
+      announced: true,
+      lockReady: false,
+      fault: null,
+      faultCounts: { ...session.faultCounts },
+      moireFlags: session.moireFlags,
+    });
+  }
+  const sample: Telemetry = {
+    glare: num(body.glare),
+    finger: num(body.finger),
+    occlusion: num(body.occlusion),
+    skew: num(body.skew),
+    dark: num(body.dark),
+    blur: num(body.blur),
+    moire: num(body.moire),
+    screenshot: body.screenshot as Telemetry["screenshot"],
+    missingBack: body.missingBack as Telemetry["missingBack"],
+  };
+  const fault: FaultKey | null = faultKey(sample);
+  if (fault === null) {
+    session.faultCounts = zeroFaultCounts();
+  } else {
+    for (const key of FAULT_KEYS) {
+      session.faultCounts[key] = key === fault ? session.faultCounts[key] + 1 : 0;
+    }
+  }
+  // Moiré-flag seam for the deferred fraud-matrix inputs (§7).
+  if (fault === "moire") session.moireFlags += 1;
+
+  const consecutive = fault === null ? 0 : session.faultCounts[fault];
+  const fired = withPanel(coach({ ...sample, turns: consecutive }), session.flow.stage);
+  const lockReady = isLockReady(sample);
+  const announced = fired.text !== session.lastCoachText;
+  if (announced) {
+    session.lastCoachText = fired.text;
+    session.flow = { ...session.flow, last_turn: fired };
+    pushTurn(session, "system", fired.text, fired.kind);
+  }
+  const step = await stepBody(session, c.req.param("id"), null, false, !announced);
   return c.json({
-    sessionId: c.req.param("id"),
-    stage: next.stage,
-    turn: next.last_turn?.kind ?? null,
-    text: next.last_turn?.text ?? "",
-    intent: null,
-    advanced: next.stage !== before,
-    narration,
-    transcript: session.transcript,
-    captures: session.captures,
-    capturesPurged: next.capturesPurged,
-    report: reportFor(session),
+    ...step,
+    turn: fired.kind,
+    text: fired.text,
+    panel: fired.panel ?? generatePanel(fired.kind, session.flow.stage, { text: fired.text }),
+    announced,
+    lockReady,
+    fault,
+    faultCounts: { ...session.faultCounts },
+    moireFlags: session.moireFlags,
   });
+}
+
+app.post("/api/session/:id/telemetry", (c) => handleTelemetry(c));
+app.post("/api/session/:id/sample", (c) => handleTelemetry(c));
+
+/** Lock the current frame: stores an opaque ref behind the retake pair. */
+async function handleLock(c: {
+  req: { param: (name: string) => string };
+  json: (body: unknown, status?: number) => Response;
+}) {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "unknown_session" }, 404);
+  if (!CAPTURE_STAGES.has(session.flow.stage)) {
+    return c.json({ error: "wrong_stage", stage: session.flow.stage }, 409);
+  }
+  const ref = lockRef(session);
+  session.pendingCapture = ref;
+  const text = LOCK_TEXT[session.flow.stage] ?? "Captured. Keep it, or retake?";
+  const fired = {
+    kind: "progress" as const,
+    text,
+    panel: generatePanel("progress", session.flow.stage, {
+      text,
+      pending: true,
+      ref,
+    }),
+  };
+  session.flow = { ...session.flow, last_turn: fired };
+  pushTurn(session, "system", text, fired.kind);
+  return c.json(await stepBody(session, c.req.param("id"), null, false));
+}
+
+app.post("/api/session/:id/lock", (c) => handleLock(c));
+app.post("/api/session/:id/capture/lock", (c) => handleLock(c));
+
+app.post("/api/session/:id/keep", async (c) => {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "unknown_session" }, 404);
+  const kept = await doKeep(session, c.req.param("id"), null);
+  return c.json(kept.body, kept.status);
+});
+app.post("/api/session/:id/capture/keep", async (c) => {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "unknown_session" }, 404);
+  const kept = await doKeep(session, c.req.param("id"), null);
+  return c.json(kept.body, kept.status);
+});
+
+app.post("/api/session/:id/retake", async (c) => {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "unknown_session" }, 404);
+  const retaken = await doRetake(session, c.req.param("id"), null);
+  return c.json(retaken.body, retaken.status);
+});
+app.post("/api/session/:id/capture/retake", async (c) => {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "unknown_session" }, 404);
+  const retaken = await doRetake(session, c.req.param("id"), null);
+  return c.json(retaken.body, retaken.status);
+});
+
+/** Action-form capture alias: { action: "lock" | "keep" | "retake" }. */
+app.post("/api/session/:id/capture", async (c) => {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "unknown_session" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { action?: string };
+  const action = body.action ?? "lock";
+  if (action === "keep") {
+    const kept = await doKeep(session, c.req.param("id"), null);
+    return c.json(kept.body, kept.status);
+  }
+  if (action === "retake") {
+    const retaken = await doRetake(session, c.req.param("id"), null);
+    return c.json(retaken.body, retaken.status);
+  }
+  if (action === "lock") return handleLock(c);
+  return c.json({ error: "unknown_action", action }, 400);
 });
 
 app.get("/page", (c) => c.html(PAGE));
@@ -347,21 +654,63 @@ const PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aria — AU Voice IDV demo</title>
 <style>
-  :root { color-scheme: dark; --ok:#4ade80; --bad:#f87171; --meh:#fbbf24; --dim:#8b93a1;
-          --line:#1b2230; --panel:#11161e; }
+  :root { color-scheme: dark;
+          --base:#0B0E13; --raised:#12161D; --overlay:#1A2130;
+          --ink:#EDEFF4; --ink2:#9AA3B2; --inkfaint:#5B6472;
+          --voice:#7DD3FC; --guide:#38BDF8;
+          --ok:#4ADE80; --bad:#F87171; --meh:#FBBF24;
+          --line:#1b2230; --panel:#11161e; --hairline:#222B3A;
+          --dim:#8b93a1; }
   * { box-sizing:border-box; }
-  body { margin:0; padding:2rem 1.5rem 4rem; background:#0c0f14; color:#e6e9ef;
-         font:17px/1.55 ui-sans-serif,-apple-system,system-ui,sans-serif; max-width:58rem; }
+  body { margin:0; padding:2rem 1.5rem 4rem; background:#0B0E13; color:#EDEFF4;
+         font:17px/1.55 ui-sans-serif,-apple-system,system-ui,sans-serif; max-width:56rem; }
   h1 { font-size:1.3rem; margin:0 0 .2rem; letter-spacing:-.01em; }
-  .sub { color:var(--dim); font-size:.85rem; margin:0 0 1.5rem; }
+  .sub { color:var(--ink2); font-size:.85rem; margin:0 0 1.5rem; }
   .row { display:flex; flex-wrap:wrap; gap:.4rem; margin:0 0 .75rem; align-items:center; }
-  button { background:var(--panel); color:inherit; border:1px solid #262d38; border-radius:.45rem;
-           padding:.55rem .8rem; font:inherit; font-size:.82rem; cursor:pointer; }
+  button { background:var(--raised); color:inherit; border:1px solid #262d38; border-radius:.45rem;
+           padding:.55rem .8rem; font:inherit; font-size:.82rem; cursor:pointer; min-height:44px; }
   button:hover:not(:disabled) { border-color:#3b4554; }
   button[aria-pressed="true"] { border-color:#4b6ea8; color:#cfe0ff; }
   button.primary { background:#1b2740; border-color:#35507e; font-weight:600; }
   button:disabled { opacity:.45; cursor:default; }
-  #stage { font-size:.72rem; letter-spacing:.09em; text-transform:uppercase; color:var(--dim); }
+  #stage { font-size:.72rem; letter-spacing:.09em; text-transform:uppercase; color:var(--ink2); }
+  #orbRow { display:flex; gap:1rem; align-items:flex-start; margin:1rem 0; }
+  #orb { flex:none; width:2.6rem; height:2.6rem; border-radius:9999px;
+         border:2px solid #5B6472; margin-top:.2rem; }
+  #orb.listening, #orb.speaking { border-color:#7DD3FC;
+         box-shadow:0 0 18px rgba(125,211,252,.35); }
+  #spoken { font-size:28px; font-weight:600; line-height:1.3; letter-spacing:-.01em;
+            color:#EDEFF4; min-height:1.3em; }
+  #captureWrap { margin:1rem 0; }
+  #captureWrap[hidden] { display:none; }
+  #captureFrame { position:relative; border-radius:16px; overflow:hidden;
+                  background:#000; aspect-ratio:4/3; max-height:60vh; }
+  #viewfinder { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  #guides { position:absolute; inset:0; width:100%; height:100%; }
+  #captureFrame.locked { box-shadow:0 0 0 2px #4ADE80, 0 0 24px rgba(74,222,128,.3); }
+  #captureMeta { font-size:.72rem; letter-spacing:.09em; text-transform:uppercase;
+                 color:var(--ink2); margin:.5rem 0; }
+  #coach { background:#12161D; border:1px solid #222B3A; border-radius:10px;
+           padding:.8rem 1rem; margin:.5rem 0 .75rem; min-height:2.6em; }
+  #coach:empty { display:none; }
+  #panel { margin:1rem 0; }
+  #panel:empty { display:none; }
+  #panel .card { background:#12161D; border:1px solid #222B3A; border-radius:10px;
+                 padding:.8rem 1rem; }
+  #panel .ptitle { font-size:.72rem; letter-spacing:.09em; text-transform:uppercase;
+                   color:var(--ink2); margin-bottom:.4rem; }
+  #panel .ptext { margin-bottom:.6rem; }
+  #panel .ptag { font-size:.66rem; letter-spacing:.08em; text-transform:uppercase;
+                 color:var(--inkfaint); margin-top:.6rem; }
+  #panel ol.steps { list-style:none; padding:0; margin:0; display:flex; gap:.5rem; flex-wrap:wrap; }
+  #panel ol.steps li { font-size:.78rem; padding:.3rem .6rem; border:1px solid #222B3A;
+                       border-radius:6px; color:var(--ink2); display:block; border-bottom:1px solid #222B3A; }
+  #panel ol.steps li.done { color:#4ADE80; border-color:#1f4d33; }
+  #panel ol.steps li.active { color:#7DD3FC; border-color:#2b4a5e; }
+  #panel dl.rows { margin:0; font-size:.85rem; }
+  #panel dl.rows dt { color:var(--ink2); font-size:.72rem; text-transform:uppercase;
+                      letter-spacing:.08em; }
+  #panel dl.rows dd { margin:.1rem 0 .6rem; }
   #transcript { margin:1.5rem 0 1rem; display:flex; flex-direction:column; gap:.6rem; }
   .turn { padding:.7rem .9rem; border-left:2px solid #2a3444; background:#0e131b; border-radius:0 .4rem .4rem 0; }
   .turn.you { border-left-color:#3f6fbf; background:#0d1420; }
@@ -388,6 +737,10 @@ const PAGE = `<!doctype html>
   details ol { list-style:decimal; padding-left:1.4rem; }
   details li { display:list-item; border-bottom:1px solid var(--line); padding:.3rem 0; }
   #tiermsg { font-size:1rem; margin:.4rem 0; }
+  @media (prefers-reduced-motion: reduce) {
+    #orb.listening, #orb.speaking { box-shadow:none; }
+    #captureFrame.locked { box-shadow:0 0 0 2px #4ADE80; }
+  }
 </style>
 
 <h1>Aria — AU Voice IDV demo</h1>
@@ -397,6 +750,26 @@ const PAGE = `<!doctype html>
 <div class="row">
   <button class="primary" id="start" disabled>Start run</button>
   <span id="stage">idle</span>
+</div>
+
+<div id="assistant">
+  <div id="orbRow">
+    <div id="orb" role="img" aria-label="Assistant voice state: idle"></div>
+    <div id="spoken" aria-live="polite"></div>
+  </div>
+  <div id="captureWrap" hidden>
+    <div id="captureFrame">
+      <video id="viewfinder" playsinline muted></video>
+      <canvas id="guides"></canvas>
+    </div>
+    <div id="captureMeta">capturing…</div>
+    <div id="coach" aria-live="polite"></div>
+    <div class="row">
+      <button class="primary" id="lockBtn" disabled>Lock capture</button>
+      <button id="standinBtn" hidden>Use stand-in capture</button>
+    </div>
+  </div>
+  <div id="panel"></div>
 </div>
 
 <div id="transcript" aria-live="polite"></div>
@@ -418,6 +791,10 @@ const fixturesEl = $('fixtures'), transcriptEl = $('transcript'), stageEl = $('s
 const listenEl = $('listen'), decisionEl = $('decision'), tierEl = $('tiermsg');
 const checksEl = $('checks');
 const noteEl = $('note'), startBtn = $('start'), inputEl = $('utterance');
+const orbEl = $('orb'), spokenEl = $('spoken'), panelEl = $('panel');
+const captureWrap = $('captureWrap'), captureFrame = $('captureFrame');
+const videoEl = $('viewfinder'), guidesEl = $('guides'), coachEl = $('coach');
+const captureMeta = $('captureMeta'), lockBtn = $('lockBtn'), standinBtn = $('standinBtn');
 
 const CAPTURE_SIGNAL = {
   awaiting_doc_front: 'front_captured',
@@ -430,12 +807,25 @@ const READING_SIGNAL = {
   reading_back: 'frames_done',
   comparing: 'tier_done',
 };
+const CAPTURE_LABEL = {
+  awaiting_doc_front: 'Capture, document front, guidance active',
+  awaiting_doc_back: 'Capture, document back, guidance active',
+  awaiting_challenge: 'Capture, challenge, guidance active',
+  awaiting_selfie: 'Capture, selfie, guidance active',
+};
 
 let fixtureId = null;
 let sessionId = null;
 let busy = false;
 let micBroken = false;
 let silentStreak = 0;
+let pendingRef = null;
+let captureStream = null;
+let captureStage = null;
+let sampling = false;
+let sampleInflight = false;
+let sampleTimer = null;
+let lockBusy = false;
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -477,11 +867,30 @@ function renderTranscript(lines) {
   transcriptEl.lastChild?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
+/** Exactly one live spoken line; the verdict announces assertively, once. */
+function setSpoken(text, assertive) {
+  spokenEl.textContent = text;
+  spokenEl.setAttribute('aria-live', assertive === true ? 'assertive' : 'polite');
+}
+
+/** One coach card; a new instruction replaces the old, never stacks. */
+function setCoach(text) {
+  coachEl.replaceChildren();
+  if (text) coachEl.textContent = text;       // textContent only: never innerHTML
+}
+
+function setOrb(state) {
+  orbEl.classList.toggle('listening', state === 'listening');
+  orbEl.classList.toggle('speaking', state === 'speaking');
+  orbEl.setAttribute('aria-label', 'Assistant voice state: ' + state);
+}
+
 function speak(text) {
   return new Promise((resolve) => {
     if (!window.speechSynthesis || !text) return resolve();
+    setOrb('speaking');
     let done = false;
-    const finish = () => { if (!done) { done = true; resolve(); } };
+    const finish = () => { if (!done) { done = true; setOrb('idle'); resolve(); } };
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.02;
     u.onend = finish;
@@ -503,6 +912,7 @@ async function post(path, body) {
   return res.json();
 }
 
+function pause(ms) { return new Promise(r => setTimeout(r, ms)); }
 function auditPanel(audit) {
   const details = document.createElement('details');
   const summary = document.createElement('summary');
@@ -522,29 +932,36 @@ function auditPanel(audit) {
   return details;
 }
 
-function renderReport(report) {
-  decisionEl.textContent = report.decision;
-  decisionEl.className = report.decision === 'verified' ? 'pass'
-    : report.decision === 'rejected' ? 'fail' : 'inconclusive';
+/** Decision screen, data-bound to the generated evidence panel. */
+function renderDecisionFromPanel(panel, report) {
+  const verdict = (panel && panel.verdict) || (report && report.decision) || '';
+  const evidence = (panel && panel.evidence) || (report && report.failedFirst) || [];
+  const userMessage = (panel && panel.userMessage) || (report && report.userMessage) || '';
+  const limitations = (panel && panel.limitations) || (report && report.limitations) || [];
+  const fixture = (report && report.fixture) || fixtureId;
 
-  tierEl.textContent = report.userMessage;
+  decisionEl.textContent = verdict;
+  decisionEl.className = verdict === 'verified' ? 'pass'
+    : verdict === 'rejected' ? 'fail' : 'inconclusive';
+
+  tierEl.textContent = userMessage;
 
   checksEl.replaceChildren();
   const h = document.createElement('h2');
   h.textContent = 'checks — failures first';
   const ul = document.createElement('ul');
-  for (const check of report.failedFirst) {
+  for (const check of evidence) {
     const li = document.createElement('li');
     const mark = document.createElement('span');
     mark.className = check.result === 'pass' ? 'pass' : check.result === 'fail' ? 'fail' : 'inconclusive';
-    mark.textContent = check.result === 'pass' ? '\\u2713' : check.result === 'fail' ? '\\u2717' : '?';
+    mark.textContent = check.result === 'pass' ? '\u2713' : check.result === 'fail' ? '\u2717' : '?';
     const name = document.createElement('span');
     name.className = 'id';
     name.textContent = check.id;
-    const evidence = document.createElement('span');
-    evidence.className = 'ev';
-    evidence.textContent = check.evidence;
-    li.append(mark, name, evidence);
+    const ev = document.createElement('span');
+    ev.className = 'ev';
+    ev.textContent = check.evidence;
+    li.append(mark, name, ev);
     ul.append(li);
   }
   checksEl.append(h, ul);
@@ -553,7 +970,7 @@ function renderReport(report) {
   limits.textContent = 'limitations';
   checksEl.append(limits);
   const lulum = document.createElement('ul');
-  for (const line of report.limitations) {
+  for (const line of limitations) {
     const li = document.createElement('li');
     const dot = document.createElement('span');
     dot.textContent = '–';
@@ -570,7 +987,7 @@ function renderReport(report) {
   checksEl.append(auditH);
   const auditBox = document.createElement('div');
   checksEl.append(auditBox);
-  if (report.audit) {
+  if (report && report.audit) {
     auditBox.append(auditPanel(report.audit));
   } else {
     // On-demand so a slow model call never delays the Decision screen.
@@ -580,7 +997,7 @@ function renderReport(report) {
       b.disabled = true;
       b.textContent = 'Auditing…';
       try {
-        const res = await fetch('/api/run/' + report.fixture + '?meta=1');
+        const res = await fetch('/api/run/' + fixture + '?meta=1');
         if (!res.ok) throw new Error('audit -> ' + res.status);
         const meta = await res.json();
         auditBox.replaceChildren(auditPanel(meta.audit));
@@ -593,28 +1010,373 @@ function renderReport(report) {
   }
 }
 
-function pause(ms) { return new Promise(r => setTimeout(r, ms)); }
+/**
+ * Generated-panel renderer. One panel per Turn, replaced on Turn close;
+ * unknown shapes fail closed to the text twin. Every choice acts — there
+ * are no dead controls.
+ */
+function renderPanel(panel, fallbackText) {
+  panelEl.replaceChildren();
+  if (!panel || typeof panel !== 'object') {
+    if (fallbackText) panelEl.textContent = fallbackText;
+    return;
+  }
+  if (panel.primitive === 'evidence-peek') {
+    renderDecisionFromPanel(panel, null);
+    return;
+  }
+  const card = document.createElement('div');
+  card.className = 'card';
+  const title = document.createElement('div');
+  title.className = 'ptitle';
+  title.textContent = panel.title || 'Update';
+  card.append(title);
+  if (panel.text) {
+    const twin = document.createElement('div');
+    twin.className = 'ptext';
+    twin.textContent = panel.text;            // textContent only: never innerHTML
+    card.append(twin);
+  }
+  if ((panel.primitive === 'choice-list' || panel.primitive === 'retake-pair') && Array.isArray(panel.choices)) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    for (const choice of panel.choices) {
+      const b = document.createElement('button');
+      b.textContent = choice.label;           // textContent only: never innerHTML
+      b.addEventListener('click', () => onChoice(choice));
+      row.append(b);
+    }
+    card.append(row);
+  } else if (panel.primitive === 'progress-steps' && Array.isArray(panel.steps)) {
+    const ol = document.createElement('ol');
+    ol.className = 'steps';
+    for (const step of panel.steps) {
+      const li = document.createElement('li');
+      li.className = step.state;
+      li.textContent = step.label;            // textContent only: never innerHTML
+      ol.append(li);
+    }
+    card.append(ol);
+  } else if (panel.primitive === 'confirm-row' && Array.isArray(panel.rows)) {
+    const dl = document.createElement('dl');
+    dl.className = 'rows';
+    for (const row of panel.rows) {
+      const dt = document.createElement('dt');
+      dt.textContent = row.label;
+      const dd = document.createElement('dd');
+      dd.textContent = row.value;             // textContent only: never innerHTML
+      dl.append(dt, dd);
+    }
+    card.append(dl);
+  } else if (panel.primitive !== 'text') {
+    // Unknown shape: fail closed to the text twin (already rendered above).
+  }
+  if (panel.provider) {
+    const tag = document.createElement('div');
+    tag.className = 'ptag';
+    tag.textContent = panel.provider === 'Spark' ? 'Spark' : 'local templates';
+    card.append(tag);
+  }
+  panelEl.append(card);
+}
 
+function onChoice(choice) {
+  if (!choice || typeof choice !== 'object') return;
+  if (choice.id === 'keep') return doKeep();
+  if (choice.id === 'retake') return doRetake();
+  if (choice.id === 'describe') {
+    listenEl.textContent = 'Type a short description of what you see, then press Send.';
+    inputEl.focus({ preventScroll: true });
+    return;
+  }
+  if (choice.utterance) return respond(choice.utterance);
+  inputEl.focus({ preventScroll: true });
+}
+
+async function doKeep() {
+  if (busy) return;
+  busy = true;
+  try {
+    const step = await post('/api/session/' + sessionId + '/keep', {});
+    busy = false;
+    await drive(step);
+  } catch {
+    busy = false;
+  }
+}
+
+async function doRetake() {
+  if (busy) return;
+  busy = true;
+  try {
+    const step = await post('/api/session/' + sessionId + '/retake', {});
+    busy = false;
+    // Back to guidance blue: the lock flash must not survive a retake.
+    captureFrame.classList.remove('locked');
+    drawGuides(captureStage, false);
+    await drive(step);
+  } catch {
+    busy = false;
+  }
+}
+function showCapture(on, stage) {
+  captureWrap.hidden = !on;
+  if (on && stage && CAPTURE_LABEL[stage]) {
+    captureWrap.setAttribute('aria-label', CAPTURE_LABEL[stage]);
+    captureMeta.textContent = 'capturing…';
+  }
+}
+
+/** Guide overlay: corner brackets for documents, oval for faces. */
+function drawGuides(stage, locked) {
+  const frame = captureFrame.getBoundingClientRect();
+  const w = Math.max(2, Math.round(frame.width));
+  const h = Math.max(2, Math.round(frame.height));
+  guidesEl.width = w;
+  guidesEl.height = h;
+  const ctx = guidesEl.getContext('2d');
+  if (!ctx) return;
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = locked === true ? '#4ADE80' : '#38BDF8';
+  ctx.lineWidth = 3;
+  const face = stage === 'awaiting_challenge' || stage === 'awaiting_selfie';
+  if (face) {
+    ctx.beginPath();
+    ctx.ellipse(w / 2, h / 2, w * 0.28, h * 0.34, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  } else {
+    const m = Math.min(w, h) * 0.1, len = Math.min(w, h) * 0.12;
+    const corners = [[m, m, 1, 1], [w - m, m, -1, 1], [m, h - m, 1, -1], [w - m, h - m, -1, -1]];
+    ctx.beginPath();
+    for (const [x, y, dx, dy] of corners) {
+      ctx.moveTo(x + len * dx, y);
+      ctx.lineTo(x, y);
+      ctx.lineTo(x, y + len * dy);
+    }
+    ctx.stroke();
+  }
+}
+
+function stopCaptureTracks() {
+  try {
+    if (captureStream) for (const t of captureStream.getTracks()) t.stop();
+  } catch { /* already stopped */ }
+  captureStream = null;
+  try { videoEl.srcObject = null; } catch { /* no video */ }
+}
+
+function stopCapture() {
+  sampling = false;
+  sampleInflight = false;
+  stopCaptureTracks();
+  captureStage = null;
+  if (sampleTimer !== null) { clearInterval(sampleTimer); sampleTimer = null; }
+  captureFrame.classList.remove('locked');
+  showCapture(false);
+  lockBtn.disabled = true;
+  standinBtn.hidden = true;
+}
+
+async function ensureCapture(stage) {
+  showCapture(true, stage);
+  if (captureStream !== null && captureStage === stage) {
+    sampling = true;
+    return;
+  }
+  stopCaptureTracks();
+  captureStage = stage;
+  await startCapture(stage);
+}
+
+/** Open the live viewfinder for a capture stage (camera-first path). */
+async function startCapture(stage) {
+  setCoach('Opening camera…');
+  captureFrame.classList.remove('locked');
+  const docStage = stage === 'awaiting_doc_front' || stage === 'awaiting_doc_back';
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('no camera');
+    }
+    // Documents use the rear camera; challenge/selfie face the user.
+    captureStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: docStage ? 'environment' : 'user' },
+      audio: false,
+    });
+  } catch (err) {
+    await cameraDenied(stage);
+    return;
+  }
+  const track = captureStream.getVideoTracks()[0];
+  if (track) track.onended = () => cameraDenied(captureStage);
+  videoEl.srcObject = captureStream;
+  try { await videoEl.play(); } catch { /* sampling guards readiness */ }
+  drawGuides(stage, false);
+  sampling = true;
+  sampleInflight = false;
+  if (sampleTimer === null) sampleTimer = setInterval(sampleTick, 200);
+  lockBtn.disabled = pendingRef !== null;
+}
+
+/**
+ * Camera-denied park path: the coach card explains, the run parks, and
+ * the fixture stand-in waits for an explicit user confirm — the run
+ * never auto-continues without a capture.
+ */
+async function cameraDenied(stage) {
+  stopCaptureTracks();
+  sampling = false;
+  captureMeta.textContent = 'camera unavailable — run parked';
+  let parked = null;
+  try {
+    parked = await post('/api/session/' + sessionId + '/signal', { event: 'camera_denied' });
+  } catch { /* offline: local card only */ }
+  const text = (parked && parked.text) || "I can't reach your camera, so this run is parked here.";
+  setSpoken(text, false);
+  setCoach(text);
+  if (parked) {
+    stageEl.textContent = parked.stage;
+    renderTranscript(parked.transcript);
+    renderPanel(parked.panel, parked.text);
+  }
+  standinBtn.hidden = false;
+  lockBtn.disabled = true;
+  await speak((parked && parked.narration && parked.narration.text) || text);
+}
+
+let standinBusy = false;
+standinBtn.addEventListener('click', async () => {
+  if (standinBusy || !sessionId || !captureStage || !CAPTURE_SIGNAL[captureStage]) return;
+  standinBusy = true;
+  standinBtn.hidden = true;
+  try {
+    const next = await post('/api/session/' + sessionId + '/signal', { event: CAPTURE_SIGNAL[captureStage] });
+    standinBusy = false;
+    await drive(next);
+  } catch {
+    standinBusy = false;
+    standinBtn.hidden = false;
+  }
+});
+
+lockBtn.addEventListener('click', async () => {
+  if (lockBusy || !sessionId) return;
+  lockBusy = true;
+  lockBtn.disabled = true;
+  const lockSession = sessionId;
+  try {
+    const res = await post('/api/session/' + sessionId + '/lock', {});
+    if (sessionId !== lockSession) return;   // restart won the race: drop it
+    sampling = false;   // hold the frame while Keep/Retake is open
+    pendingRef = res.pendingCapture;
+    setSpoken(res.text, false);
+    renderTranscript(res.transcript);
+    renderPanel(res.panel, res.text);
+    await announceLock(res.text);
+  } catch {
+    lockBtn.disabled = pendingRef !== null ? true : false;
+  } finally {
+    lockBusy = false;
+  }
+});
+
+/** Every lock is announced: guide flash + haptic + spoken confirm. */
+async function announceLock(text) {
+  captureFrame.classList.add('locked');
+  drawGuides(captureStage, true);
+  if (navigator.vibrate) { try { navigator.vibrate(15); } catch { /* no haptics */ } }
+  await speak(text);
+}
+
+// 32px luma peek for the coarse client-side heuristics.
+const peek = document.createElement('canvas');
+peek.width = 32;
+peek.height = 32;
+
+/**
+ * Client-side telemetry: brightness/glare/variance over the 32px peek.
+ * Only numbers leave the device — no viewfinder frames are uploaded or
+ * stored. v1 covers dark/glare/blur live; skew/occlusion/moiré send 0
+ * pending the physical-specimen pilot (accepted limitation).
+ */
+function videoSample() {
+  const ctx = peek.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(videoEl, 0, 0, 32, 32);
+  const px = ctx.getImageData(0, 0, 32, 32).data;
+  const n = px.length / 4;
+  let sum = 0, sum2 = 0, blown = 0;
+  for (let i = 0; i < px.length; i += 4) {
+    const l = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) / 255;
+    sum += l;
+    sum2 += l * l;
+    if (l > 0.985) blown += 1;
+  }
+  const mean = sum / n;
+  const variance = sum2 / n - mean * mean;
+  return {
+    glare: blown / n > 0.04 ? 0.9 : 0,
+    dark: mean < 0.22 ? 0.9 : 0,
+    blur: variance < 0.003 ? 0.7 : 0,
+    skew: 0,
+    finger: 0,
+    occlusion: 0,
+    moire: 0,
+  };
+}
+
+/** ~5Hz coach loop: sample the viewfinder, post telemetry, hold or coach. */
+async function sampleTick() {
+  // Strict guard: only a true sampling flag posts, and only one round-trip
+  // is ever in flight — slow responses never double-post or flicker.
+  if (!(sampling === true)) return;
+  if (sampleInflight === true) return;
+  if (captureStream === null || videoEl.readyState < 2) return;
+  sampleInflight = true;
+  const tickSession = sessionId;
+  const tickStage = captureStage;
+  try {
+    const res = await post('/api/session/' + sessionId + '/telemetry', videoSample());
+    // A stage advance or restart won the race: stale guidance stays out.
+    if (sessionId !== tickSession || captureStage !== tickStage) return;
+    lockBtn.disabled = !(res.lockReady === true) || pendingRef !== null;
+    // Panels for unfired repeat-episode turns are discarded, not shown.
+    if (res.announced === true) {
+      setSpoken(res.text, false);
+      setCoach(res.text);
+      renderTranscript(res.transcript);
+      renderPanel(res.panel, res.text);
+      await speak(res.narration.text);
+    }
+  } catch { /* network blip: keep sampling */ }
+  finally { sampleInflight = false; }
+}
 async function drive(step) {
+  pendingRef = step.pendingCapture ?? null;
   stageEl.textContent = step.stage;
+  setSpoken(step.text, step.stage === 'decided');
   renderTranscript(step.transcript);
+  if (!step.report) renderPanel(step.panel, step.text);
   await speak(step.narration.text);
 
-  if (step.report) { renderReport(step.report); listenEl.textContent = ''; return; }
+  if (step.report) {
+    renderDecisionFromPanel(step.panel, step.report);
+    listenEl.textContent = '';
+    stopCapture();
+    return;
+  }
   if (step.stage === 'decided') return;
+  if (!CAPTURE_SIGNAL[step.stage]) stopCapture();
 
-  // The demo has no camera, so the fixture stands in for the capture and
-  // the backend signal is the honest stage boundary.
+  // Reading/comparing are backend work, so the fixture stand-in drives
+  // them; capture stages open the live viewfinder instead.
   if (READING_SIGNAL[step.stage]) {
     listenEl.textContent = step.stage === 'comparing' ? 'comparing...' : 'reading...';
     await pause(900);
     return drive(await post('/api/session/' + sessionId + '/signal', { event: READING_SIGNAL[step.stage] }));
   }
   if (CAPTURE_SIGNAL[step.stage]) {
-    listenEl.textContent = 'capturing...';
-    await pause(700);
-    const next = await post('/api/session/' + sessionId + '/signal', { event: CAPTURE_SIGNAL[step.stage] });
-    return drive(next);
+    listenEl.textContent = '';
+    await ensureCapture(step.stage);
+    return;
   }
 
   listen();
@@ -637,11 +1399,13 @@ function listen() {
 
   let settled = false;
   listenEl.textContent = 'Listening...';
+  setOrb('listening');
 
   const settle = (text) => {
     if (settled) return;
     settled = true;
     clearTimeout(watchdog);
+    setOrb('idle');
     listenEl.textContent = '';
     if (text === null) {
       micBroken = true;
@@ -702,7 +1466,12 @@ async function respond(utterance) {
 startBtn.addEventListener('click', async () => {
   if (!fixtureId) return;
   sessionId = null;
+  pendingRef = null;
+  stopCapture();
   transcriptEl.replaceChildren();
+  panelEl.replaceChildren();
+  setSpoken('', false);
+  setCoach('');
   decisionEl.textContent = '';
   decisionEl.className = '';
   tierEl.textContent = '';

@@ -154,13 +154,15 @@ const NARRATION_SHAPE = {
 const TURN_SHAPE = { kind: "string", text: "string", who: "string" };
 const SUBJECT_LINE_SHAPE = { text: "string", who: "string" };
 
-function stepShape(transcriptShapes, reportShape, intentShape = "object", capturesShape = { array: ["string"] }) {
+function stepShape(transcriptShapes, reportShape, intentShape = "object", capturesShape = { array: ["string"] }, panelShape, pendingShape = "object") {
   return {
     advanced: "boolean",
     captures: capturesShape,
     capturesPurged: "boolean",
     intent: intentShape,
     narration: NARRATION_SHAPE,
+    panel: panelShape,
+    pendingCapture: pendingShape,
     report: reportShape,
     sessionId: "string",
     stage: "string",
@@ -197,12 +199,41 @@ const REPORT_SHAPE = {
   userMessage: "string",
 };
 
+// Goal 2 additive panel shapes (deliberate: every step carries its
+// Turn-bound generated panel plus the pending-capture ref).
+const PANEL_BASE = {
+  primitive: "string",
+  provider: "string",
+  text: "string",
+  title: "string",
+};
+const PANEL_CHOICE = { id: "string", label: "string", utterance: "string" };
+const PANEL_STEP = { id: "string", label: "string", state: "string" };
+const PANEL_CHOICE_LIST = {
+  ...PANEL_BASE,
+  choices: { array: [PANEL_CHOICE] },
+};
+const PANEL_STEPS = {
+  ...PANEL_BASE,
+  steps: { array: [PANEL_STEP] },
+};
+const PANEL_EVIDENCE = {
+  ...PANEL_BASE,
+  evidence: { array: [CHECK_SHAPE, FACE_CHECK_SHAPE].sort((a, b) =>
+    JSON.stringify(a) < JSON.stringify(b) ? -1 : 1,
+  ) },
+  limitations: { array: ["string"] },
+  tier: "string",
+  userMessage: "string",
+  verdict: "string",
+};
+
 test("API key sets stable: session create + say + signal", async () => {
   const created = await post("/api/session", { fixtureId: "aus-passport-clean" });
   // Fresh session: empty captures; intent/report null.
   assert.deepEqual(
     keyShape(created.body),
-    stepShape([TURN_SHAPE], "object", "object", { array: [] }),
+    stepShape([TURN_SHAPE], "object", "object", { array: [] }, PANEL_CHOICE_LIST),
   );
 
   const id = created.body.sessionId;
@@ -211,7 +242,7 @@ test("API key sets stable: session create + say + signal", async () => {
     keyShape(said.body),
     stepShape([TURN_SHAPE, SUBJECT_LINE_SHAPE].sort((a, b) =>
       JSON.stringify(a) < JSON.stringify(b) ? -1 : 1,
-    ), "object", "string", { array: [] }),
+    ), "object", "string", { array: [] }, PANEL_STEPS),
   );
 
   const signaled = await post(`/api/session/${id}/signal`, { event: "front_captured" });
@@ -219,7 +250,7 @@ test("API key sets stable: session create + say + signal", async () => {
     keyShape(signaled.body),
     stepShape([TURN_SHAPE, SUBJECT_LINE_SHAPE].sort((a, b) =>
       JSON.stringify(a) < JSON.stringify(b) ? -1 : 1,
-    ), "object"),
+    ), "object", "object", undefined, PANEL_STEPS),
   );
 });
 
@@ -243,7 +274,7 @@ test("API key sets stable: decided step carries the full report shape", async ()
     keyShape(step.body),
     stepShape([TURN_SHAPE, SUBJECT_LINE_SHAPE].sort((a, b) =>
       JSON.stringify(a) < JSON.stringify(b) ? -1 : 1,
-    ), REPORT_SHAPE),
+    ), REPORT_SHAPE, "object", undefined, PANEL_EVIDENCE),
   );
 });
 
@@ -300,6 +331,20 @@ test("API key sets stable: error shapes", async () => {
   const badSignal = await post("/api/session/no-such-session/signal", { event: "x" });
   assert.equal(badSignal.status, 404);
   assert.deepEqual(keyShape(badSignal.body), { error: "string" });
+
+  const fresh = await post("/api/session", { fixtureId: "aus-passport-clean" });
+  const noKeep = await post(`/api/session/${fresh.body.sessionId}/keep`, {});
+  assert.equal(noKeep.status, 409);
+  assert.deepEqual(keyShape(noKeep.body), { error: "string" });
+  const noRetake = await post(`/api/session/${fresh.body.sessionId}/retake`, {});
+  assert.equal(noRetake.status, 409);
+  assert.deepEqual(keyShape(noRetake.body), { error: "string" });
+  const wrongStage = await post(`/api/session/${fresh.body.sessionId}/lock`, {});
+  assert.equal(wrongStage.status, 409);
+  assert.deepEqual(keyShape(wrongStage.body), { error: "string", stage: "string" });
+  const badAction = await post(`/api/session/${fresh.body.sessionId}/capture`, { action: "bogus" });
+  assert.equal(badAction.status, 400);
+  assert.deepEqual(keyShape(badAction.body), { action: "string", error: "string" });
 });
 
 test("submission names Aria; limitations block byte-identical", () => {

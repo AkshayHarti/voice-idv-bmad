@@ -53,13 +53,51 @@ test("missing-back run stays parked through say/signal noise; tier unreachable",
   assert.equal(d.decision, null);
 });
 
-test("coach counter >=3 closes out as re-ask/not_verified", () => {
+test("coach counter >=3 parks with warn + typed-description alternative", () => {
   const t = coach({ glare: 0.9, turns: 3 });
-  assert.equal(t.kind, "re-ask");
-  assert.match(t.text, /not verified/);
+  assert.equal(t.kind, "warn");
+  assert.match(t.text, /type a short description/);
+  assert.match(t.text, /parked/);
+  assert.doesNotMatch(t.text, /not verified/);
   const w = coach({ screenshot: true });
   assert.equal(w.kind, "warn");
   assert.match(w.text, /photo of a screen/);
+});
+
+test("unknown utterances in capture stages acknowledge-and-hold", () => {
+  let c = say(startRun("nsw-dl-clean"), "ready");
+  assert.equal(c.stage, "awaiting_doc_front");
+  const held = say(c, "it's a blue card with a hologram");
+  assert.equal(held.stage, "awaiting_doc_front");
+  assert.equal(held.last_intent, "unknown");
+  assert.equal(held.last_turn.kind, "re-ask");
+  assert.match(held.last_turn.text, /staying on this capture/);
+  // Consent/idle stages keep the consent-oriented re-ask.
+  const idle = say(startRun("nsw-dl-clean"), "blah blah");
+  assert.match(idle.last_turn.text, /I consent/);
+});
+
+test("camera_denied parks capture stages with warn guidance, ignores others", () => {
+  let c = say(startRun("nsw-dl-clean"), "ready");
+  const parked = signal(c, "camera_denied");
+  assert.equal(parked.stage, "awaiting_doc_front");
+  assert.equal(parked.last_turn.kind, "warn");
+  assert.match(parked.last_turn.text, /parked/);
+  assert.match(parked.last_turn.text, /stand-in/);
+  const idle = signal(startRun("nsw-dl-clean"), "camera_denied");
+  assert.equal(idle.stage, "awaiting_consent");
+  assert.equal(idle.last_turn.kind, "consent");
+});
+
+test("every fired Turn carries its generated panel", () => {
+  let c = say(startRun("nsw-dl-clean"), "ready");
+  assert.equal(c.last_turn.panel.primitive, "progress-steps");
+  c = signal(c, "front_captured");
+  assert.equal(c.last_turn.panel.primitive, "progress-steps");
+  const held = say(c, "um, the card is bent");
+  assert.equal(held.stage, "reading_front");
+  const denied = say(startRun("nsw-dl-clean"), "no, stop");
+  assert.equal(denied.last_turn.panel.primitive, "choice-list");
 });
 
 test("deny purges captures and aborts to idle", () => {
