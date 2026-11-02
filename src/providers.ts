@@ -5,8 +5,12 @@
 // a late model Turn is discarded, not spliced. Narration never decides —
 // Decisions come from the check engine over fixtures, so --no-meta runs
 // decide identically (parity). With no keys everything runs offline.
+// Model IDs/prices come from ./meta-models.js (pinned, Task 0). Live calls
+// run behind `progress` Turns at ≤8000ms (Task 0 binding prescription);
+// inline narration keeps ≤1000ms so the 1.5s floor holds.
 // Avoid: not liveness, not forgery proof, not certified matching —
 // narration describes prompts; only checks decide.
+import { META_MODELS, PRICING, logSpend } from "./meta-models.js";
 
 export type ProviderName = "meta" | "openrouter" | "replicate" | "local";
 
@@ -32,7 +36,7 @@ interface ChainDeps {
   env?: Record<string, string | undefined>;
 }
 
-const META_BASE = "https://api.meta.ai/v1";
+export const META_BASE = "https://api.meta.ai/v1";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const REPLICATE_BASE = "https://api.replicate.com/v1";
 
@@ -53,7 +57,7 @@ export function configuredProviders(
   };
 }
 
-async function postJson(
+export async function postJson(
   fetcher: Fetcher,
   url: string,
   headers: Record<string, string>,
@@ -76,7 +80,7 @@ async function postJson(
   }
 }
 
-function responseText(payload: unknown): string | null {
+export function responseText(payload: unknown): string | null {
   const data = payload as {
     output_text?: string;
     choices?: Array<{ message?: { content?: string } }>;
@@ -106,7 +110,7 @@ export async function narrate(
         `${META_BASE}/responses`,
         { authorization: `Bearer ${env.META_API_KEY}` },
         {
-          model: env.META_TEXT_MODEL ?? "muse-spark-1.3",
+          model: env.META_TEXT_MODEL ?? META_MODELS.spark,
           input:
             `You are the voice of an identity verification flow. Reply with one ` +
             `spoken sentence, at most 30 words, no markdown. ` +
@@ -131,7 +135,7 @@ export async function narrate(
         `${OPENROUTER_BASE}/chat/completions`,
         { authorization: `Bearer ${env.OPENROUTER_API_KEY}` },
         {
-          model: env.OPENROUTER_TEXT_MODEL ?? "meta/muse-spark-1.3",
+          model: env.OPENROUTER_TEXT_MODEL ?? `meta/${META_MODELS.spark}`,
           max_tokens: 80,
           messages: [
             {
@@ -173,6 +177,31 @@ export interface Region {
 }
 
 /**
+ * Pull `Region[]` out of a SAM payload. Accepts `{regions:[...]}` and the
+ * Replicate-style `{output:{regions:[...]}}`; entries need a 4-number quad
+ * (missing labels default to the request label). Shape is provisional —
+ * confirm against the live API in Task 4. Never throws.
+ */
+function samRegions(payload: unknown, label: string): Region[] {
+  const data = payload as { regions?: unknown; output?: { regions?: unknown } };
+  const raw = Array.isArray(data.regions)
+    ? data.regions
+    : Array.isArray(data.output?.regions)
+      ? data.output.regions
+      : [];
+  const regions: Region[] = [];
+  for (const entry of raw as Array<{ label?: unknown; quad?: unknown }>) {
+    const quad = Array.isArray(entry.quad) ? entry.quad.map(Number) : [];
+    if (quad.length !== 4 || quad.some((n) => !Number.isFinite(n))) continue;
+    regions.push({
+      label: typeof entry.label === "string" && entry.label ? entry.label : label,
+      quad: quad as [number, number, number, number],
+    });
+  }
+  return regions;
+}
+
+/**
  * Segmentation chain. `local` returns known fixture geometry, which is
  * exact for authored fixtures; model segmentation is only needed where
  * the geometry is genuinely unknown.
@@ -185,10 +214,33 @@ export async function segment(
   const env = deps.env ?? {};
   const fetcher = deps.fetcher ?? fetch;
   const skipped: string[] = [];
-  void request;
 
   if (env.META_API_KEY) {
-    skipped.push("meta: no image supplied (fixture geometry used)");
+    if (!request.imageBase64) {
+      skipped.push("meta: no image supplied (fixture geometry used)");
+    } else {
+      try {
+        const payload = await postJson(
+          fetcher,
+          `${META_BASE}/responses`,
+          { authorization: `Bearer ${env.META_API_KEY}` },
+          {
+            model: META_MODELS.sam,
+            input:
+              `Segment the ${request.label} in this capture. ` +
+              `Reply with region quads in 0–1000 space.`,
+            image_base64: request.imageBase64,
+          },
+          8000,
+        );
+        const regions = samRegions(payload, request.label);
+        if (!regions.length) throw new Error("meta returned no regions");
+        logSpend(META_MODELS.sam, 1, PRICING[META_MODELS.sam].perCall);
+        return { provider: "meta", regions, skipped };
+      } catch (error) {
+        skipped.push(`meta: ${(error as Error).message}`);
+      }
+    }
   } else {
     skipped.push("meta: not configured");
   }

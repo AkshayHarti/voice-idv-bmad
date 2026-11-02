@@ -9,6 +9,8 @@ export interface PassportFixture {
   mrz_lines: [string, string];
   /** Check ids this fixture is expected to fail (named for the demo). */
   expected_failures: string[];
+  /** Visual-base source; absent on the original composed set. */
+  art?: "glimmer" | "composed";
 }
 
 export interface DLFixture {
@@ -20,6 +22,8 @@ export interface DLFixture {
   back: DLBackFields | null;
   /** Check ids this fixture is expected to fail (named for the demo). */
   expected_failures: string[];
+  /** Visual-base source; absent on the original composed set. */
+  art?: "glimmer" | "composed";
 }
 
 export type Fixture = PassportFixture | DLFixture;
@@ -116,6 +120,48 @@ const FIXTURES: Record<string, Fixture> = {
     back: null,
     expected_failures: ["card_number_present"],
   },
+};
+
+// --- Glimmer edge-case fixtures (100% synthetic, appended Task 3) ---
+// Visual bases come from Glimmer (`scripts/glimmer-art.mjs`, saved under
+// `fixtures/art/`); the MRZ and card-number regions above are composed
+// programmatically exactly like the originals, so ground truth is exact
+// and independent of the art. Both are clean: expected_failures [].
+
+const GLARE_MRZ = (() => {
+  const { line1, line2 } = authorTD3({ ...CLEAN_BASE, passportNumber: "N7654321" });
+  return [line1, line2] as [string, string];
+})();
+
+const TILT_FRONT: DLFrontFields = {
+  licence_number: "87654321",
+  full_name: "ALEX JORDAN CITIZEN",
+  dob: "1990-01-01",
+  address: NSW_CLEAN_ADDRESS,
+  expiry_date: "2030-01-01",
+};
+
+const TILT_BACK: DLBackFields = {
+  card_number: "123654",
+  address_sticker: { present: true, parsed_address: NSW_CLEAN_ADDRESS },
+};
+
+FIXTURES["aus-passport-glare"] = {
+  id: "aus-passport-glare",
+  kind: "au_passport",
+  mrz_lines: GLARE_MRZ,
+  expected_failures: [],
+  art: "glimmer",
+};
+
+FIXTURES["nsw-dl-tilt"] = {
+  id: "nsw-dl-tilt",
+  kind: "au_dl",
+  state: "NSW",
+  front: TILT_FRONT,
+  back: TILT_BACK,
+  expected_failures: [],
+  art: "glimmer",
 };
 
 export function loadFixture(id: string): Fixture {

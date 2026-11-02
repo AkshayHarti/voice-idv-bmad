@@ -60,7 +60,7 @@ Back stages are skipped for passports. DLs always require back (Card Number + ad
 
 | Stage | Voice prompt (sample) | Backend action |
 |---|---|---|
-| consent | "I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start." | Record consent audio + timestamp |
+| consent | "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start." | Record consent audio + timestamp |
 | awaiting_doc_front | "Hold your licence up, front facing the camera. Fill the frame." | Edge telemetry: doc quad, size, focus, glare map |
 | reading_front | "Good framing. Hold still one second… captured front." | HQ capture, OCR front, segment regions |
 | awaiting_doc_back | "Now flip the card over so I can grab your Card Number on the back." | Detect flip, quad, focus |
