@@ -16,3 +16,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-friendlier-voice.md`
   summary: Add the auto-capture re-vote banner to brainstorm.html so the keepsake alone cannot mislead an implementer.
   evidence: review found the keepsake declares AUTO-CAPTURE ALWAYS decided while the intent doc records cluster 3 dropped with re-vote open.
+- source_spec: `_bmad-output/implementation-artifacts/spec-mic-unavailable.md`
+  summary: Correct the spec Intent to match the implemented never-latch policy for permission and device errors.
+  evidence: review found the frozen text says device/permission loss parks while the code parks only on 3x silence; frozen text cannot be edited in-run.
+- source_spec: `_bmad-output/implementation-artifacts/spec-mic-unavailable.md`
+  summary: Post microphone failure mix (block/capture/silence counts) so it is observable like the capture counters.
+  evidence: review found mic failures emit no telemetry while sibling subsystems count theirs; new API surface, follow-up sized.

@@ -817,8 +817,10 @@ const CAPTURE_LABEL = {
 let fixtureId = null;
 let sessionId = null;
 let busy = false;
-let micBroken = false;
+let micParked = null;
 let silentStreak = 0;
+let activeRecognition = null;
+let voiceGen = 0;
 let pendingRef = null;
 let captureStream = null;
 let captureStage = null;
@@ -1452,12 +1454,15 @@ async function drive(step) {
 
 function listen() {
   inputEl.focus({ preventScroll: true });
-  if (!SR || micBroken) {
-    listenEl.textContent = micBroken
-      ? 'Microphone unavailable. Type your answer, then press Send.'
+  if (!SR || micParked) {
+    listenEl.textContent = micParked
+      ? micParked + ' Type your answer, then press Send.'
       : 'Type your answer, then press Send.';
     return;
   }
+  // Never stack recognizers: an in-flight one owns the turn and its result
+  // drives onward. Starting a second would throw straight into a dead mic.
+  if (activeRecognition) return;
 
   const recognition = new SR();
   recognition.lang = 'en-AU';
@@ -1466,26 +1471,33 @@ function listen() {
   recognition.maxAlternatives = 1;
 
   let settled = false;
+  const gen = voiceGen;
   listenEl.textContent = 'Listening...';
   setOrb('listening');
+  activeRecognition = recognition;
 
-  const settle = (text) => {
-    if (settled) return;
+  // Shared turn teardown: each path below ends the turn at most once, and a
+  // turn from a previous Start never speaks into the new session.
+  const abandon = () => {
+    if (settled || gen !== voiceGen) return false;
     settled = true;
     clearTimeout(watchdog);
+    if (activeRecognition === recognition) activeRecognition = null;
     setOrb('idle');
+    return true;
+  };
+
+  // Only dead air parks the mic: permission, device, and network errors name
+  // their remedy and retry next turn, self-healing if fixed meanwhile.
+  const settle = (text) => {
+    if (!abandon()) return;
     listenEl.textContent = '';
-    if (text === null) {
-      micBroken = true;
-      listen();
-      return;
-    }
     if (text === '') {
       silentStreak += 1;
-      // One silent window is a re-ask. Two in a row means the microphone is
-      // not working, and asking again would spin forever.
-      if (silentStreak >= 2) {
-        micBroken = true;
+      // Three fully silent windows is dead air, not a quiet user: park with
+      // a remedy instead of spinning spoken re-asks forever.
+      if (silentStreak >= 3) {
+        micParked = "I can't hear anything — check your microphone, then press Start to try voice again.";
         listen();
         return;
       }
@@ -1503,15 +1515,27 @@ function listen() {
 
   recognition.onresult = (event) => settle(event.results[0][0].transcript.trim());
   recognition.onerror = (event) => {
-    if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(event.error)) {
-      settle(null);
+    // Named remedies retry next turn — never latch, typed always available.
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      if (!abandon()) return;
+      listenEl.textContent = "Microphone is blocked — allow it in your browser's site settings, then type your answer.";
+      return;
+    }
+    if (event.error === 'audio-capture') {
+      if (!abandon()) return;
+      listenEl.textContent = 'No microphone found on this device. Type your answer instead.';
+      return;
+    }
+    if (event.error === 'network') {
+      if (!abandon()) return;
+      listenEl.textContent = 'Speech service unreachable — check your connection, then type your answer.';
       return;
     }
     settle('');
   };
   recognition.onend = () => settle('');
 
-  try { recognition.start(); } catch { settle(null); }
+  try { recognition.start(); } catch { settle(''); }
 }
 
 async function respond(utterance) {
@@ -1535,6 +1559,16 @@ startBtn.addEventListener('click', async () => {
   if (!fixtureId) return;
   sessionId = null;
   pendingRef = null;
+  // Fresh run, fresh mic: parked state dies here, the in-flight recognizer
+  // is stopped, and its generation retires so a ghost result can never
+  // speak into the new session.
+  voiceGen += 1;
+  if (activeRecognition) {
+    try { activeRecognition.abort(); } catch { /* already gone */ }
+    activeRecognition = null;
+  }
+  micParked = null;
+  silentStreak = 0;
   stopCapture();
   transcriptEl.replaceChildren();
   panelEl.replaceChildren();
@@ -1555,7 +1589,11 @@ startBtn.addEventListener('click', async () => {
 $('typed').addEventListener('submit', (event) => {
   event.preventDefault();
   const value = inputEl.value.trim();
-  if (value) respond(value);
+  // Typed success breaks a silence streak: only consecutive dead air parks.
+  if (value) {
+    silentStreak = 0;
+    respond(value);
+  }
 });
 </script>
 </html>`;

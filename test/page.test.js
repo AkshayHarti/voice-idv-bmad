@@ -76,6 +76,18 @@ test("late responses are dropped; stand-in cannot double-fire or stall", async (
   assert.ok(html.includes("drawGuides(captureStage, false)"), "retake redraws guidance guides");
 });
 
+test("microphone failures name the remedy and retry next turn", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("activeRecognition"), "overlapping recognizers guarded");
+  assert.ok(html.includes("browser's site settings"), "blocked mic names the remedy");
+  assert.ok(html.includes("No microphone found"), "missing device named");
+  assert.ok(html.includes("Speech service unreachable"), "network errors named, not counted as silence");
+  assert.ok(html.includes("silentStreak >= 3"), "only sustained dead air parks");
+  assert.ok(html.includes("voiceGen"), "retired generations cannot speak into new runs");
+  assert.ok(html.includes("retry next turn"), "retry policy stated in code");
+  assert.ok(!html.includes("micBroken"), "permanent latch is gone");
+});
+
 test("speech prefers a friendly female voice", async () => {
   const html = await getPage();
   assert.ok(html.includes("pickVoice"), "voice picker present");
