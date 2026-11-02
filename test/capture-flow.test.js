@@ -434,13 +434,20 @@ test("near-miss keep/retake resolve with an echo and heard→resolved transcript
   assert.ok(redone.transcript.some((l) => l.who === "you" && l.text === "retak → retake"));
   assert.ok(redone.transcript.some((l) => l.who === "system" && l.text === "Retaking the back."));
 
-  // Low-confidence near-miss re-asks: pair stays open, nothing resolves.
+  // Low-confidence near-miss re-asks with a fixed nudge: pair stays open,
+  // nothing resolves, and the full question is NOT repeated verbatim.
   await lock(id);
   const unsure = await say(id, "keep it up");
   assert.ok(unsure.pendingCapture, "pending lock survives the re-ask");
   assert.equal(unsure.stage, "awaiting_doc_back");
-  assert.equal(unsure.turn, "progress", "lock turn unclobbered, pair still open");
-  assert.equal(unsure.panel.primitive, "retake-pair");
+  assert.equal(unsure.turn, "re-ask");
+  assert.equal(unsure.text, "Sorry, I didn't catch that — keep it, or retake?");
+  assert.doesNotMatch(unsure.text, /Got the back — captured/, "question not repeated verbatim");
+  assert.equal(unsure.panel.primitive, "retake-pair", "pair card survives the nudge");
+  assert.ok(
+    unsure.transcript.some((l) => l.who === "system" && l.text === unsure.text),
+    "nudge has a transcript twin",
+  );
   assert.ok(!("echo" in unsure), "no echo without a resolution");
 
   // Exact phrasing still resolves with no echo key.

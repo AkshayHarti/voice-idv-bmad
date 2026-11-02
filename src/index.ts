@@ -303,6 +303,12 @@ const RETAKE_TARGETS = ["retake", "take again", "take it again", "take that agai
 /** Confident resolve at ≤2 edits (≤1 for 4-char "keep"); ≤4 re-asks. */
 const RESOLVE_BAND = 2;
 const REASK_BAND = 4;
+/**
+ * Fixed low-confidence nudge: a re-ask says this short line, never a
+ * verbatim repeat of the full standing question (functional prompts stay
+ * fixed-wording; this is the one fixed form).
+ */
+const REASK_NUDGE = "Sorry, I didn't catch that — keep it, or retake?";
 
 function normalizeUtterance(utterance: string): string {
   return utterance
@@ -590,6 +596,20 @@ app.post("/api/session/:id/say", async (c) => {
     }
     if (resolved.kind === "reask") {
       pushTurn(session, "you", utterance);
+      // Fixed nudge with the pair panel re-attached: the pair stays open
+      // and keeps its card, but Aria says the short nudge instead of
+      // re-speaking the full standing question with no transcript twin.
+      const nudge = {
+        kind: "re-ask" as const,
+        text: REASK_NUDGE,
+        panel: generatePanel("progress", session.flow.stage, {
+          text: REASK_NUDGE,
+          pending: true,
+          ref: session.pendingCapture ?? "",
+        }),
+      };
+      session.flow = { ...session.flow, last_turn: nudge };
+      pushTurn(session, "system", nudge.text, nudge.kind);
       return c.json(await stepBody(session, c.req.param("id"), null, false));
     }
   }

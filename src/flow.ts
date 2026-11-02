@@ -135,7 +135,7 @@ const CAMERA_DENIED_TEXT =
 const CHALLENGE_TEXT =
   "Look at the camera, turn your head slowly left… and back.";
 
-const SELFIE_TEXT = "Hold still for your selfie… captured.";
+const SELFIE_TEXT = "Hold still for your selfie.";
 
 function instructTurn(
   fixtureId: string,
@@ -418,7 +418,7 @@ export function signal(s: FlowState, ev: string): FlowState {
           last_turn: withPanel(
             {
               kind: "progress",
-              text: "Good framing. Hold still one second… captured front.",
+              text: "Good framing. Hold still one second…",
             },
             "reading_front",
           ),
