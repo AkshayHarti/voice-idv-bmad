@@ -188,23 +188,33 @@ test("deny purges locks and coach streaks; restarts start clean", async () => {
   assert.equal(fresh.faultCounts.glare, 1);
 });
 
-test("repeat episodes suppress; stage advance re-announces the fault", async () => {
+test("coach episodes rotate, identical repeats suppress; advance re-announces", async () => {
   const id = await start("nsw-dl-clean");
   await say(id, "I consent");
   const first = await sample(id, { glare: 0.9 });
   assert.equal(first.announced, true);
-  const repeat = await sample(id, { glare: 0.9 });
-  assert.equal(repeat.announced, false);
-  assert.equal(repeat.turn, "re-ask");
+  // The 2nd episode rotates the variant (announced, new transcript line).
+  const second = await sample(id, { glare: 0.9 });
+  assert.equal(second.announced, true);
+  assert.equal(second.turn, "re-ask");
+  assert.notEqual(second.text, first.text);
+  assert.equal(second.transcript.length, first.transcript.length + 1);
+  const third = await sample(id, { glare: 0.9 });
+  assert.equal(third.turn, "warn");
+  assert.equal(third.announced, true);
+  // The 4th repeats the fixed escalation wording: identical text suppresses.
+  const fourth = await sample(id, { glare: 0.9 });
+  assert.equal(fourth.announced, false);
+  assert.equal(fourth.turn, "warn");
   assert.equal(
-    repeat.transcript.length,
-    first.transcript.length,
+    fourth.transcript.length,
+    third.transcript.length,
     "suppressed repeat appends no transcript line",
   );
 
-  // Fresh run: one fault, advance, same fault. The streak (2) still
-  // coaches the identical text, so announced:true proves the advance
-  // reset the suppression — without it this repeat would stay silent.
+  // Fresh run: one fault, advance, same fault. Announced:true proves the
+  // advance reset the suppression — without it this repeat would stay
+  // silent (the streak-1 text matches the pre-advance text).
   const id2 = await start("nsw-dl-clean");
   await say(id2, "I consent");
   await sample(id2, { glare: 0.9 });
@@ -225,15 +235,18 @@ test("telemetry warn parks at all four capture stages", async () => {
     await driveTo(id, stage);
     const kinds = [];
     const announced = [];
+    const texts = [];
     for (let i = 0; i < 3; i++) {
       const res = await sample(id, { glare: 0.9 });
       assert.equal(res.stage, stage, `parked at ${stage}`);
       assert.equal(res.advanced, false);
       kinds.push(res.turn);
       announced.push(res.announced);
+      texts.push(res.text);
     }
     assert.deepEqual(kinds, ["re-ask", "re-ask", "warn"], stage);
-    assert.deepEqual(announced, [true, false, true], stage);
+    assert.deepEqual(announced, [true, true, true], stage);
+    assert.equal(new Set(texts).size, 3, `rotated episodes at ${stage}`);
     const last = await sample(id, { glare: 0.9 });
     assert.match(last.text, /type a short description/, stage);
     assert.equal(last.stage, stage);
@@ -328,6 +341,127 @@ test("spoken keep/retake work while a lock is pending; chatter does not", async 
   assert.equal(exact.stage, "awaiting_doc_back");
 });
 
+test("lock composes a quality verdict from the latest sample, generic when none", async () => {
+  // No samples: generic fallback verdict, fixed question still served.
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  const generic = await lock(id);
+  assert.equal(generic.verdict, "Front captured.");
+  assert.match(generic.text, /Keep it, or retake/);
+  // Verdict turn then question turn, in that order.
+  const tail = generic.transcript.slice(-2);
+  assert.equal(tail[0].text, "Front captured.");
+  assert.equal(tail[0].kind, "progress");
+  assert.equal(tail[1].text, generic.text);
+  await retake(id);
+
+  // Lock-ready sample: the full verdict.
+  await sample(id, {});
+  const full = await lock(id);
+  assert.equal(full.verdict, "Front captured: sharp, all four corners in.");
+  await retake(id);
+
+  // Faulted sample: generic fallback, never a false quality claim.
+  await sample(id, { glare: 0.9 });
+  const faulted = await lock(id);
+  assert.equal(faulted.verdict, "Front captured.");
+
+  // The noun follows the stage.
+  const id2 = await start("nsw-dl-clean");
+  await driveTo(id2, "awaiting_doc_back");
+  await sample(id2, {});
+  const back = await lock(id2);
+  assert.equal(back.verdict, "Back captured: sharp, all four corners in.");
+
+  // Camera loss invalidates earlier samples: the stand-in lock verdicts
+  // generic, never from a stale live frame.
+  const id3 = await start("nsw-dl-clean");
+  await say(id3, "I consent");
+  await sample(id3, {});
+  await sample(id3, { denied: true });
+  const standin = await lock(id3);
+  assert.equal(standin.verdict, "Front captured.");
+
+  // Face stages earn the face-centered detail, not doc wording.
+  const id4 = await start("nsw-dl-clean");
+  await driveTo(id4, "awaiting_challenge");
+  await sample(id4, {});
+  const challenge = await lock(id4);
+  assert.equal(challenge.verdict, "Challenge frames captured: sharp, face centered.");
+
+  const id5 = await start("nsw-dl-clean");
+  await driveTo(id5, "awaiting_selfie");
+  await sample(id5, {});
+  const selfie = await lock(id5);
+  assert.equal(selfie.verdict, "Selfie captured: sharp, face centered.");
+
+  // Retake invalidates the sample: relock with no resample verdicts generic.
+  const id6 = await start("nsw-dl-clean");
+  await say(id6, "I consent");
+  await sample(id6, {});
+  await lock(id6);
+  await retake(id6);
+  const relocked = await lock(id6);
+  assert.equal(relocked.verdict, "Front captured.");
+
+  // Signal-denied camera invalidates the same way.
+  const id7 = await start("nsw-dl-clean");
+  await say(id7, "I consent");
+  await sample(id7, {});
+  await fire(id7, "camera_denied");
+  const deniedLock = await lock(id7);
+  assert.equal(deniedLock.verdict, "Front captured.");
+});
+
+test("near-miss keep/retake resolve with an echo and heard→resolved transcript", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  await lock(id);
+  const kept = await say(id, "kep it");
+  assert.equal(kept.stage, "reading_front");
+  assert.equal(kept.pendingCapture, null);
+  assert.equal(kept.echo, "Keeping the front.");
+  const heard = kept.transcript.find((l) => l.who === "you" && l.text.includes("kep it"));
+  assert.equal(heard.text, "kep it → keep");
+  assert.ok(kept.transcript.some((l) => l.who === "system" && l.text === "Keeping the front."));
+
+  await fire(id, "frames_done");
+  await lock(id);
+  const redone = await say(id, "retak");
+  assert.equal(redone.stage, "awaiting_doc_back");
+  assert.equal(redone.pendingCapture, null);
+  assert.equal(redone.echo, "Retaking the back.");
+  assert.ok(redone.transcript.some((l) => l.who === "you" && l.text === "retak → retake"));
+  assert.ok(redone.transcript.some((l) => l.who === "system" && l.text === "Retaking the back."));
+
+  // Low-confidence near-miss re-asks: pair stays open, nothing resolves.
+  await lock(id);
+  const unsure = await say(id, "keep it up");
+  assert.ok(unsure.pendingCapture, "pending lock survives the re-ask");
+  assert.equal(unsure.stage, "awaiting_doc_back");
+  assert.equal(unsure.turn, "progress", "lock turn unclobbered, pair still open");
+  assert.equal(unsure.panel.primitive, "retake-pair");
+  assert.ok(!("echo" in unsure), "no echo without a resolution");
+
+  // Exact phrasing still resolves with no echo key.
+  const exact = await say(id, "keep it");
+  assert.equal(exact.stage, "reading_back");
+  assert.ok(!("echo" in exact));
+
+  // Echo nouns follow the stage on face captures too.
+  const idc = await start("nsw-dl-clean");
+  await driveTo(idc, "awaiting_challenge");
+  await lock(idc);
+  const keptC = await say(idc, "kep it");
+  assert.equal(keptC.echo, "Keeping the challenge frames.");
+
+  const ids = await start("nsw-dl-clean");
+  await driveTo(ids, "awaiting_selfie");
+  await lock(ids);
+  const keptS = await say(ids, "kep it");
+  assert.equal(keptS.echo, "Keeping the selfie.");
+});
+
 test("truthy non-true screenshot/missingBack coach via the API", async () => {
   const id = await start("nsw-dl-clean");
   await say(id, "I consent");
@@ -408,6 +542,10 @@ test("telemetry and lock responses carry the additive capture keys", async () =>
 test("suppressed repeats answer template narration, never the model chain", async () => {
   const id = await start("nsw-dl-clean");
   await say(id, "I consent");
+  // Episodes 1–3 announce (variant a, variant b, escalation); the 4th
+  // repeats the fixed escalation wording and suppresses.
+  await sample(id, { glare: 0.9 });
+  await sample(id, { glare: 0.9 });
   await sample(id, { glare: 0.9 });
   const suppressed = await sample(id, { glare: 0.9 });
   assert.equal(suppressed.announced, false);

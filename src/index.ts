@@ -177,6 +177,8 @@ interface Session {
   moireFlags: number;
   /** Last announced coach text (repeat-episode suppression). */
   lastCoachText: string | null;
+  /** Latest telemetry sample this stage (feeds the lock quality verdict). */
+  lastSample: Telemetry | null;
   /** Locked capture awaiting Keep/Retake (opaque server-generated ref). */
   pendingCapture: string | null;
   captureSeq: number;
@@ -207,6 +209,7 @@ function purgeCaptures(session: Session): void {
   session.pendingCapture = null;
   session.faultCounts = zeroFaultCounts();
   session.lastCoachText = null;
+  session.lastSample = null;
 }
 
 function newSession(fixtureId: string): Session {
@@ -218,6 +221,7 @@ function newSession(fixtureId: string): Session {
     faultCounts: zeroFaultCounts(),
     moireFlags: 0,
     lastCoachText: null,
+    lastSample: null,
     pendingCapture: null,
     captureSeq: 0,
   };
@@ -292,6 +296,102 @@ const LOCK_TEXT: Record<string, string> = {
 /** Voice equivalents for the retake pair while a lock is pending. */
 const KEEP_UTTERANCE = /^\s*keep(\s+it)?\s*\.?\s*$/i;
 const RETAKE_UTTERANCE = /^\s*(retake|take (it |that )?again)\s*\.?\s*$/i;
+
+/** Near-miss targets: the same closed pair phrasing, typo-tolerant. */
+const KEEP_TARGETS = ["keep", "keep it"];
+const RETAKE_TARGETS = ["retake", "take again", "take it again", "take that again"];
+/** Confident resolve at ≤2 edits (≤1 for 4-char "keep"); ≤4 re-asks. */
+const RESOLVE_BAND = 2;
+const REASK_BAND = 4;
+
+function normalizeUtterance(utterance: string): string {
+  return utterance
+    .toLowerCase()
+    .replace(/[.…?!]+$/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function levenshtein(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const sub = diag + (a[i - 1] === b[j - 1] ? 0 : 1);
+      diag = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, sub);
+    }
+  }
+  return prev[b.length];
+}
+
+function minDistance(normalized: string, targets: string[]): number {
+  return Math.min(...targets.map((t) => levenshtein(normalized, t)));
+}
+
+type PairResolution =
+  | { kind: "keep" }
+  | { kind: "retake" }
+  | { kind: "reask" }
+  | { kind: "none" };
+
+/**
+ * Recognition-tolerant pair resolution for an open lock. Exact phrasing
+ * wins first; a near-miss ("kep it") resolves to the strictly closer
+ * side; a low-confidence near-miss re-asks with the pair held open;
+ * anything further falls through to the existing chatter handling.
+ */
+function resolvePair(utterance: string): PairResolution {
+  if (KEEP_UTTERANCE.test(utterance)) return { kind: "keep" };
+  if (RETAKE_UTTERANCE.test(utterance)) return { kind: "retake" };
+  const normalized = normalizeUtterance(utterance);
+  if (normalized.length === 0) return { kind: "none" };
+  const dk = minDistance(normalized, KEEP_TARGETS);
+  const dr = minDistance(normalized, RETAKE_TARGETS);
+  const keepConfident = KEEP_TARGETS.some(
+    (t) => levenshtein(normalized, t) <= (t.length <= 4 ? 1 : RESOLVE_BAND),
+  );
+  const retakeConfident = RETAKE_TARGETS.some(
+    (t) => levenshtein(normalized, t) <= RESOLVE_BAND,
+  );
+  if (keepConfident && dk < dr) return { kind: "keep" };
+  if (retakeConfident && dr < dk) return { kind: "retake" };
+  if (Math.min(dk, dr) <= REASK_BAND) return { kind: "reask" };
+  return { kind: "none" };
+}
+
+/** Capture name per stage for verdicts, echoes, and accessible names. */
+const CAPTURE_NAME: Record<string, string> = {
+  awaiting_doc_front: "Front",
+  awaiting_doc_back: "Back",
+  awaiting_challenge: "Challenge frames",
+  awaiting_selfie: "Selfie",
+};
+
+/**
+ * Quality-verdict turn for a lock, composed from the latest telemetry
+ * sample this stage: lock-ready frames earn the full verdict, anything
+ * else (no sample, faulted frame) the generic fallback. Fixed wording
+ * per shape — verdicts never rotate.
+ */
+function qualityVerdict(stage: Stage, lastSample: Telemetry | null): string {
+  const name = CAPTURE_NAME[stage] ?? "Capture";
+  if (lastSample !== null && isLockReady(lastSample)) {
+    const detail =
+      stage === "awaiting_challenge" || stage === "awaiting_selfie"
+        ? "sharp, face centered."
+        : "sharp, all four corners in.";
+    return `${name} captured: ${detail}`;
+  }
+  return `${name} captured.`;
+}
+
+/** Near-miss resolution echo ("Keeping the front.") per stage + choice. */
+function pairEcho(stage: Stage, kind: "keep" | "retake"): string {
+  const name = (CAPTURE_NAME[stage] ?? "capture").toLowerCase();
+  return kind === "keep" ? `Keeping the ${name}.` : `Retaking the ${name}.`;
+}
 
 app.get("/api/runs", (c) =>
   c.json(
@@ -377,8 +477,20 @@ function reportFor(session: Session): Report | null {
   return evaluateFixture(session.fixture);
 }
 
+/** Near-miss resolution echo: heard form, resolved choice, spoken echo. */
+interface PairEcho {
+  heard: string;
+  resolved: "keep" | "retake";
+  text: string;
+}
+
 /** Keep the pending lock: stage-verified, then the backend signal advances. */
-async function doKeep(session: Session, id: string, viaVoice: string | null) {
+async function doKeep(
+  session: Session,
+  id: string,
+  viaVoice: string | null,
+  echo: PairEcho | null = null,
+) {
   if (session.pendingCapture === null) {
     return { status: 409 as const, body: { error: "nothing_to_keep" } };
   }
@@ -391,34 +503,59 @@ async function doKeep(session: Session, id: string, viaVoice: string | null) {
   }
   session.captures.push(session.pendingCapture);
   session.pendingCapture = null;
-  pushTurn(session, "you", viaVoice ?? "Keep");
+  if (echo !== null) {
+    pushTurn(session, "you", `${echo.heard} → ${echo.resolved}`);
+    pushTurn(session, "system", echo.text, "progress");
+  } else {
+    pushTurn(session, "you", viaVoice ?? "Keep");
+  }
   const before = session.flow.stage;
   session.flow = signal(session.flow, event);
-  if (session.flow.stage !== before) session.lastCoachText = null;
+  if (session.flow.stage !== before) {
+    session.lastCoachText = null;
+    session.lastSample = null;
+  }
   pushTurn(
     session,
     "system",
     session.flow.last_turn?.text ?? "",
     session.flow.last_turn?.kind,
   );
+  const body = await stepBody(session, id, null, session.flow.stage !== before);
   return {
     status: 200 as const,
-    body: await stepBody(session, id, null, session.flow.stage !== before),
+    body: echo !== null ? { ...body, echo: echo.text } : body,
   };
 }
 
 /** Retake the pending lock: discard it, re-instruct, hold the stage. */
-async function doRetake(session: Session, id: string, viaVoice: string | null) {
+async function doRetake(
+  session: Session,
+  id: string,
+  viaVoice: string | null,
+  echo: PairEcho | null = null,
+) {
   if (session.pendingCapture === null) {
     // No phantom Turn, no last_turn clobber — just the conflict.
     return { status: 409 as const, body: { error: "nothing_to_retake" } };
   }
   session.pendingCapture = null;
-  pushTurn(session, "you", viaVoice ?? "Retake");
+  // Fresh guidance episode: the next lock verdicts from new samples only.
+  session.lastSample = null;
+  if (echo !== null) {
+    pushTurn(session, "you", `${echo.heard} → ${echo.resolved}`);
+    pushTurn(session, "system", echo.text, "progress");
+  } else {
+    pushTurn(session, "you", viaVoice ?? "Retake");
+  }
   const turn = captureInstruct(session.flow);
   session.flow = { ...session.flow, last_turn: turn };
   pushTurn(session, "system", turn.text, turn.kind);
-  return { status: 200 as const, body: await stepBody(session, id, null, false) };
+  const body = await stepBody(session, id, null, false);
+  return {
+    status: 200 as const,
+    body: echo !== null ? { ...body, echo: echo.text } : body,
+  };
 }
 
 app.post("/api/session/:id/say", async (c) => {
@@ -426,16 +563,35 @@ app.post("/api/session/:id/say", async (c) => {
   if (!session) return c.json({ error: "unknown_session" }, 404);
 
   const body = (await c.req.json().catch(() => ({}))) as { utterance?: string };
-  const utterance = body.utterance ?? "";
+  const utterance = String(body.utterance ?? "");
   // Voice equivalents for the open retake pair (closed intents untouched;
   // the advance still runs through the backend signal inside doKeep).
-  if (session.pendingCapture !== null && KEEP_UTTERANCE.test(utterance)) {
-    const kept = await doKeep(session, c.req.param("id"), utterance);
-    return c.json(kept.body, kept.status);
-  }
-  if (session.pendingCapture !== null && RETAKE_UTTERANCE.test(utterance)) {
-    const retaken = await doRetake(session, c.req.param("id"), utterance);
-    return c.json(retaken.body, retaken.status);
+  // Near-misses resolve with an echo; low-confidence re-asks hold the
+  // pair open without touching the lock turn.
+  if (session.pendingCapture !== null) {
+    const resolved = resolvePair(utterance);
+    if (resolved.kind === "keep" || resolved.kind === "retake") {
+      const exact =
+        resolved.kind === "keep"
+          ? KEEP_UTTERANCE.test(utterance)
+          : RETAKE_UTTERANCE.test(utterance);
+      const echo: PairEcho | null = exact
+        ? null
+        : {
+            heard: utterance,
+            resolved: resolved.kind,
+            text: pairEcho(session.flow.stage, resolved.kind),
+          };
+      const done =
+        resolved.kind === "keep"
+          ? await doKeep(session, c.req.param("id"), utterance, echo)
+          : await doRetake(session, c.req.param("id"), utterance, echo);
+      return c.json(done.body, done.status);
+    }
+    if (resolved.kind === "reask") {
+      pushTurn(session, "you", utterance);
+      return c.json(await stepBody(session, c.req.param("id"), null, false));
+    }
   }
   // Embedded or negated pair phrasing ("don't retake") holds the pair open:
   // no advance, no discard, no lock-turn clobber — and it never reaches
@@ -452,7 +608,10 @@ app.post("/api/session/:id/say", async (c) => {
   session.flow = next;
   // Full deny purge: captures are deleted on deny/revoke, not flagged.
   if (next.last_intent === "deny") purgeCaptures(session);
-  if (next.stage !== before) session.lastCoachText = null;
+  if (next.stage !== before) {
+    session.lastCoachText = null;
+    session.lastSample = null;
+  }
 
   pushTurn(session, "you", utterance);
   pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
@@ -468,6 +627,9 @@ app.post("/api/session/:id/signal", async (c) => {
   const before = session.flow.stage;
   const next = signal(session.flow, event);
   session.flow = next;
+  // A dead camera invalidates earlier frames: the stand-in lock verdicts
+  // generic, never from a stale live sample.
+  if (event === "camera_denied") session.lastSample = null;
   // Captures attach on backend capture events only (speech never captures).
   if (next.stage !== before) {
     if (event === "front_captured") session.captures.push(`front:${session.fixture}`);
@@ -476,6 +638,7 @@ app.post("/api/session/:id/signal", async (c) => {
     // A stage advance retires the old guidance (same fault re-announces)
     // and any lock the advance left behind (fail-closed, UI-unreachable).
     session.lastCoachText = null;
+    session.lastSample = null;
     session.pendingCapture = null;
   }
 
@@ -511,6 +674,7 @@ async function handleTelemetry(c: {
   if (body.denied || body.cameraDenied) {
     const next = signal(session.flow, "camera_denied");
     session.flow = next;
+    session.lastSample = null;
     pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
     const step = await stepBody(session, c.req.param("id"), null, false);
     return c.json({
@@ -533,6 +697,9 @@ async function handleTelemetry(c: {
     screenshot: body.screenshot as Telemetry["screenshot"],
     missingBack: body.missingBack as Telemetry["missingBack"],
   };
+  // Latest sample this stage — the lock verdict reads it, then it dies
+  // on advance, retake, deny, or camera loss (never a stale verdict).
+  session.lastSample = { ...sample };
   const fault: FaultKey | null = faultKey(sample);
   if (fault === null) {
     session.faultCounts = zeroFaultCounts();
@@ -582,6 +749,10 @@ async function handleLock(c: {
   }
   const ref = lockRef(session);
   session.pendingCapture = ref;
+  // Verdict turn first, then the fixed keep/retake question: two separate
+  // turns, so the non-visual review path hears quality before the choice.
+  const verdict = qualityVerdict(session.flow.stage, session.lastSample);
+  pushTurn(session, "system", verdict, "progress");
   const text = LOCK_TEXT[session.flow.stage] ?? "Captured. Keep it, or retake?";
   const fired = {
     kind: "progress" as const,
@@ -594,7 +765,8 @@ async function handleLock(c: {
   };
   session.flow = { ...session.flow, last_turn: fired };
   pushTurn(session, "system", text, fired.kind);
-  return c.json(await stepBody(session, c.req.param("id"), null, false));
+  const body = await stepBody(session, c.req.param("id"), null, false);
+  return c.json({ ...body, verdict });
 }
 
 app.post("/api/session/:id/lock", (c) => handleLock(c));
@@ -697,11 +869,16 @@ const PAGE = `<!doctype html>
   #coach:empty { display:none; }
   #panel { margin:1rem 0; }
   #panel:empty { display:none; }
-  #panel .card { background:#12161D; border:1px solid #222B3A; border-radius:10px;
+  #panel .card, #dockZone .card { background:#12161D; border:1px solid #222B3A; border-radius:10px;
                  padding:.8rem 1rem; }
-  #panel .ptitle { font-size:.72rem; letter-spacing:.09em; text-transform:uppercase;
+  #panel .ptitle, #dockZone .ptitle { font-size:.72rem; letter-spacing:.09em; text-transform:uppercase;
                    color:var(--ink2); margin-bottom:.4rem; }
-  #panel .ptext { margin-bottom:.6rem; }
+  #panel .ptext, #dockZone .ptext { margin-bottom:.6rem; }
+  #panel .pverdict, #dockZone .pverdict { font-size:.85rem; color:var(--ink2); margin:.4rem 0 .6rem; }
+  #panel .confirm-card img.confirm-img, #dockZone .confirm-card img.confirm-img { width:100%; border-radius:6px; margin:.4rem 0; display:block; }
+  #panel .standin-label, #dockZone .standin-label { font-size:.85rem; color:var(--ink2); border:1px dashed #2b4a5e;
+                          border-radius:6px; padding:.6rem .8rem; margin:.4rem 0; }
+  #spoken:focus, #panel .ptitle:focus, #dockZone .ptitle:focus { outline:2px solid #35507e; outline-offset:2px; }
   #panel .ptag { font-size:.66rem; letter-spacing:.08em; text-transform:uppercase;
                  color:var(--inkfaint); margin-top:.6rem; }
   #panel ol.steps { list-style:none; padding:0; margin:0; display:flex; gap:.5rem; flex-wrap:wrap; }
@@ -751,13 +928,14 @@ const PAGE = `<!doctype html>
 <div class="row" id="fixtures" role="group" aria-label="Choose a fixture"></div>
 <div class="row">
   <button class="primary" id="start" disabled>Start run</button>
+  <button id="voiceToggle" aria-pressed="false" title="Self-voicing: auto follows screen-reader detection">Voice: auto</button>
   <span id="stage">idle</span>
 </div>
 
 <div id="assistant">
   <div id="orbRow">
     <div id="orb" role="img" aria-label="Assistant voice state: idle"></div>
-    <div id="spoken" aria-live="polite"></div>
+    <div id="spoken" aria-live="polite" tabindex="-1"></div>
   </div>
   <div id="captureWrap" hidden>
     <div id="captureFrame">
@@ -799,6 +977,7 @@ const captureWrap = $('captureWrap'), captureFrame = $('captureFrame');
 const videoEl = $('viewfinder'), guidesEl = $('guides'), coachEl = $('coach');
 const captureMeta = $('captureMeta'), lockBtn = $('lockBtn'), standinBtn = $('standinBtn');
 const dockZone = $('dockZone');
+const voiceToggle = $('voiceToggle');
 const frameHome = captureWrap.parentNode, frameHomeNext = captureWrap.nextSibling;
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -819,6 +998,20 @@ const CAPTURE_LABEL = {
   awaiting_challenge: 'Capture, challenge, guidance active',
   awaiting_selfie: 'Capture, selfie, guidance active',
 };
+const CAPTURE_NOUN = {
+  awaiting_doc_front: 'document front',
+  awaiting_doc_back: 'document back',
+  awaiting_challenge: 'challenge frames',
+  awaiting_selfie: 'selfie',
+};
+// Snapshot-failed fallback: the card still pairs a generic verdict caption
+// with Keep/Retake when the frame grab fails on live video.
+const GENERIC_VERDICT = {
+  awaiting_doc_front: 'Front captured.',
+  awaiting_doc_back: 'Back captured.',
+  awaiting_challenge: 'Challenge frames captured.',
+  awaiting_selfie: 'Selfie captured.',
+};
 
 let fixtureId = null;
 let sessionId = null;
@@ -831,6 +1024,13 @@ let activeRecognition = null;
 let voiceGen = 0;
 let silenceParked = false;
 let pendingRef = null;
+// Confirm-card review state: device-local snapshot (data URL, never posted),
+// server verdict caption, stand-in flag, and whether the card is on screen.
+let pendingSnapshot = null;
+let pendingVerdict = null;
+let pendingStandin = false;
+let cardOpen = false;
+let confirmCardEl = null;
 let captureStream = null;
 let captureStage = null;
 let sampling = false;
@@ -839,6 +1039,14 @@ let sampleFails = 0;
 let sampleDownUntil = 0;
 let sampleTimer = null;
 let lockBusy = false;
+// TTS/SR arbitration: keyboard-first use signals a screen reader, and
+// self-voicing yields to its live-region announcements; the Voice toggle
+// overrides (null = auto, true = forced on, false = forced off).
+let srDetected = false;
+let voiceOverride = null;
+window.addEventListener('keydown', (e) => {
+  if (e && e.key === 'Tab') srDetected = true;
+});
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -914,9 +1122,20 @@ function pickVoice() {
 // Prime the engine's voice list at load so the preferred voice is ready
 // sooner; Chrome populates getVoices() asynchronously after first call.
 try { speechSynthesis.getVoices(); } catch { /* no TTS - speak() guards */ }
+/** Voice toggle: auto → on → off. Overrides SR detection either way. */
+voiceToggle.addEventListener('click', () => {
+  voiceOverride = voiceOverride === null ? true : voiceOverride === true ? false : null;
+  voiceToggle.textContent = voiceOverride === null ? 'Voice: auto' : voiceOverride ? 'Voice: on' : 'Voice: off';
+  voiceToggle.setAttribute('aria-pressed', String(voiceOverride === true));
+});
 function speak(text) {
   return new Promise((resolve) => {
     if (!window.speechSynthesis || !text) return resolve();
+    // SR arbitration: when a screen reader carries the live regions,
+    // self-voicing stays silent unless the user forced it on.
+    if (voiceOverride === false || (voiceOverride === null && srDetected === true)) {
+      return resolve();
+    }
     setOrb('speaking');
     let done = false;
     const finish = () => { if (!done) { done = true; setOrb('idle'); resolve(); } };
@@ -1065,8 +1284,13 @@ function renderDecisionFromPanel(panel, report) {
  * unknown shapes fail closed to the text twin. Every choice acts — there
  * are no dead controls.
  */
+/** Remove the docked confirm card node, if present (never the live frame). */
+function dropConfirmCard() {
+  if (confirmCardEl !== null) { confirmCardEl.remove(); confirmCardEl = null; }
+}
 function renderPanel(panel, fallbackText) {
   panelEl.replaceChildren();
+  dropConfirmCard();
   if (!panel || typeof panel !== 'object') {
     if (fallbackText) panelEl.textContent = fallbackText;
     return;
@@ -1076,11 +1300,44 @@ function renderPanel(panel, fallbackText) {
     return;
   }
   const card = document.createElement('div');
-  card.className = 'card';
-  const title = document.createElement('div');
+  const isConfirm = panel.primitive === 'retake-pair';
+  card.className = isConfirm ? 'card confirm-card' : 'card';
+  if (isConfirm) {
+    card.setAttribute('role', 'alertdialog');
+    card.setAttribute('aria-label', panel.title || 'Confirm capture');
+  }
+  const title = document.createElement(isConfirm ? 'h2' : 'div');
   title.className = 'ptitle';
+  if (isConfirm) {
+    title.id = 'confirmHeading';
+    title.tabIndex = -1;
+  }
   title.textContent = panel.title || 'Update';
   card.append(title);
+  // Confirm card: device-local snapshot (decorative img, never uploaded),
+  // fixture label on the stand-in path, and the quality-verdict caption.
+  // textContent + createElement only: never innerHTML.
+  if (isConfirm) {
+    if (pendingSnapshot !== null) {
+      const img = document.createElement('img');
+      img.className = 'confirm-img';
+      img.src = pendingSnapshot;
+      img.alt = '';
+      card.append(img);
+    } else if (pendingStandin === true) {
+      const standin = document.createElement('div');
+      standin.className = 'standin-label';
+      standin.textContent = 'Stand-in capture' + (fixtureId ? ' — ' + fixtureId : '');
+      card.append(standin);
+    }
+    if (pendingVerdict) {
+      const caption = document.createElement('div');
+      caption.className = 'pverdict';
+      caption.textContent = pendingVerdict;
+      card.append(caption);
+    }
+    cardOpen = true;
+  }
   if (panel.text) {
     const twin = document.createElement('div');
     twin.className = 'ptext';
@@ -1090,9 +1347,14 @@ function renderPanel(panel, fallbackText) {
   if ((panel.primitive === 'choice-list' || panel.primitive === 'retake-pair') && Array.isArray(panel.choices)) {
     const row = document.createElement('div');
     row.className = 'row';
+    // Keep/Retake accessible names carry the capture ("Keep document front").
+    const noun = isConfirm ? CAPTURE_NOUN[captureStage] : null;
     for (const choice of panel.choices) {
       const b = document.createElement('button');
       b.textContent = choice.label;           // textContent only: never innerHTML
+      if (noun && (choice.id === 'keep' || choice.id === 'retake')) {
+        b.setAttribute('aria-label', (choice.id === 'keep' ? 'Keep ' : 'Retake ') + noun);
+      }
       b.addEventListener('click', () => onChoice(choice));
       row.append(b);
     }
@@ -1127,7 +1389,17 @@ function renderPanel(panel, fallbackText) {
     tag.textContent = panel.provider === 'Spark' ? 'Spark' : 'local templates';
     card.append(tag);
   }
-  panelEl.append(card);
+  // The confirm card docks above the input with the frame's view-follows
+  // behavior; every other panel renders in the middle region.
+  if (isConfirm) {
+    dockZone.append(card);
+    confirmCardEl = card;
+    try {
+      card.scrollIntoView({ block: 'nearest', behavior: REDUCED_MOTION ? 'auto' : 'smooth' });
+    } catch { /* older browsers: the dock still lands */ }
+  } else {
+    panelEl.append(card);
+  }
 }
 
 function onChoice(choice) {
@@ -1238,6 +1510,7 @@ function stopCapture() {
   sampleInflight = false;
   sampleFails = 0;
   setCoach('');
+  clearReviewState();
   stopCaptureTracks();
   captureStage = null;
   if (sampleTimer !== null) { clearInterval(sampleTimer); sampleTimer = null; }
@@ -1319,14 +1592,31 @@ standinBtn.addEventListener('click', async () => {
   if (standinBusy || !sessionId || !captureStage || !CAPTURE_SIGNAL[captureStage]) return;
   standinBusy = true;
   standinBtn.hidden = true;
+  const standinSession = sessionId;
   try {
-    const next = await post('/api/session/' + sessionId + '/signal', { event: CAPTURE_SIGNAL[captureStage] });
-    standinBusy = false;
-    await drive(next);
+    // Stand-in locks like live video: the confirm card shows the fixture
+    // label instead of a photo, with the server's generic verdict (no live
+    // samples exist while the camera is down), then the pair opens.
+    const res = await post('/api/session/' + sessionId + '/lock', {});
+    if (sessionId !== standinSession) return;   // restart won the race: drop it
+    sampling = false;   // hold while Keep/Retake is open
+    pendingRef = res.pendingCapture;
+    pendingSnapshot = null;
+    pendingStandin = true;
+    pendingVerdict = res.verdict || GENERIC_VERDICT[captureStage] || 'Captured.';
+    renderTranscript(res.transcript);
+    renderPanel(res.panel, res.text);
+    focusConfirmHeading();
+    setSpoken(pendingVerdict, false);
+    await speak(pendingVerdict);
+    if (sessionId !== standinSession) return;   // restart won the race: drop it
+    setSpoken(res.text, false);
+    await announceLock(res.text);
   } catch (err) {
-    standinBusy = false;
     standinBtn.hidden = false;
     listenEl.textContent = postError(err);
+  } finally {
+    standinBusy = false;
   }
 });
 
@@ -1340,9 +1630,23 @@ lockBtn.addEventListener('click', async () => {
     if (sessionId !== lockSession) return;   // restart won the race: drop it
     sampling = false;   // hold the frame while Keep/Retake is open
     pendingRef = res.pendingCapture;
-    setSpoken(res.text, false);
+    // Snapshot between the race guard and the card render; a failed grab
+    // still offers the pair with a generic verdict caption.
+    pendingSnapshot = takeSnapshot();
+    pendingStandin = false;
+    pendingVerdict = pendingSnapshot !== null
+      ? (res.verdict || GENERIC_VERDICT[captureStage] || 'Captured.')
+      : (GENERIC_VERDICT[captureStage] || 'Captured.');
+    // Card first, then the verdict turn, then the keep/retake question —
+    // separate turns, always in that order; the flash lands with the
+    // question while the card itself is the immediate tap feedback.
     renderTranscript(res.transcript);
     renderPanel(res.panel, res.text);
+    focusConfirmHeading();
+    setSpoken(pendingVerdict, false);
+    await speak(pendingVerdict);
+    if (sessionId !== lockSession) return;   // restart won the race: drop it
+    setSpoken(res.text, false);
     await announceLock(res.text);
   } catch (err) {
     // Wrong-stage means a stale in-flight lock: stay disabled instead of
@@ -1358,18 +1662,76 @@ lockBtn.addEventListener('click', async () => {
   }
 });
 
-/** Every lock is announced: guide flash + haptic + spoken confirm. */
-async function announceLock(text) {
+/** Lock flash + haptic (no speech — verdict and question speak separately). */
+function flashLock() {
   captureFrame.classList.add('locked');
   drawGuides(captureStage, true);
   if (navigator.vibrate) { try { navigator.vibrate(15); } catch { /* no haptics */ } }
+}
+
+/** Every lock is announced: guide flash + haptic + spoken confirm. */
+async function announceLock(text) {
+  flashLock();
   await speak(text);
+}
+
+/** Focus the confirm-card heading on appearance (it is tabindex=-1). */
+function focusConfirmHeading() {
+  const heading = document.getElementById('confirmHeading');
+  if (heading && heading.focus) {
+    try { heading.focus(); } catch { /* older browsers: card still renders */ }
+  }
+}
+
+/** Retire the confirm card: drop the node, clear state, focus the spoken line. */
+function retireCard() {
+  dropConfirmCard();
+  cardOpen = false;
+  pendingSnapshot = null;
+  pendingVerdict = null;
+  pendingStandin = false;
+  try { spokenEl.focus({ preventScroll: true }); } catch { /* focus stays put */ }
+}
+
+/** Clear review state silently (stop/restart — no focus move). */
+function clearReviewState() {
+  dropConfirmCard();
+  cardOpen = false;
+  pendingSnapshot = null;
+  pendingVerdict = null;
+  pendingStandin = false;
 }
 
 // 32px luma peek for the coarse client-side heuristics.
 const peek = document.createElement('canvas');
 peek.width = 32;
 peek.height = 32;
+
+// Full-frame snapshot canvas for the confirm card (separate from the peek).
+const snap = document.createElement('canvas');
+
+/**
+ * Device-local frame grab for the confirm card. The data URL lives in a
+ * JS variable and an <img> only — like telemetry, it is never posted,
+ * uploaded, or stored, and it clears on keep/retake/stop. Null when the
+ * viewfinder has no frame (stand-in path) or the grab fails.
+ */
+function takeSnapshot() {
+  try {
+    if (captureStream === null || videoEl.readyState < 2) return null;
+    const w = videoEl.videoWidth || 640;
+    const h = videoEl.videoHeight || 480;
+    if (!w || !h) return null;
+    snap.width = w;
+    snap.height = h;
+    const ctx = snap.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(videoEl, 0, 0, w, h);
+    return snap.toDataURL('image/jpeg', 0.82);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Client-side telemetry: brightness/glare/variance over the 32px peek.
@@ -1448,6 +1810,19 @@ async function drive(step) {
     return;
   }
   pendingRef = step.pendingCapture ?? null;
+  // The pair closed (keep/retake/deny): retire the card, clear the snapshot,
+  // and focus back at the spoken-line region.
+  if (cardOpen === true && step.pendingCapture == null) retireCard();
+  // Pair closed on a capture stage with no live stream: the stand-in is
+  // the only lock path, so re-offer it (covers tap and voice retakes).
+  if (step.pendingCapture == null && CAPTURE_SIGNAL[step.stage] && captureStream === null) {
+    standinBtn.hidden = false;
+  }
+  // A near-miss resolution echoes before the resolved turn sounds.
+  if (step.echo) {
+    setSpoken(step.echo, false);
+    await speak(step.echo);
+  }
   stageEl.textContent = step.stage;
   setSpoken(step.text, step.stage === 'decided');
   renderTranscript(step.transcript);
@@ -1606,6 +1981,7 @@ startBtn.addEventListener('click', async () => {
   if (!fixtureId) return;
   sessionId = null;
   pendingRef = null;
+  clearReviewState();
   // Fresh run, fresh mic: parked state dies here, the in-flight recognizer
   // is stopped, and its generation retires so a ghost result can never
   // speak into the new session.

@@ -142,3 +142,76 @@ test("telemetry stays numeric; v1 zero-heuristics are disclosed", async () => {
   assert.ok(html.includes("no viewfinder frames are uploaded"), "no frame upload");
   assert.ok(html.includes("moire: 0"), "v1 moire zero disclosed");
 });
+
+test("confirm card shows the snapshot with a verdict caption and the pair", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("dockZone.append(card)"), "confirm card docks above the input");
+  assert.ok(html.includes("card.scrollIntoView"), "view follows the docked card");
+  assert.ok(html.includes("dropConfirmCard"), "card node drops on retire and re-render");
+  assert.ok(html.includes("#dockZone .card"), "docked card keeps card chrome");
+  assert.ok(html.includes("takeSnapshot"), "snapshot grab at lock");
+  assert.ok(html.includes("toDataURL"), "snapshot encoded locally");
+  assert.ok(html.includes("createElement('img')"), "confirm-card img branch");
+  assert.ok(html.includes("img.alt = ''"), "snapshot img is decorative");
+  assert.ok(html.includes("confirm-img"), "confirm image styling");
+  assert.ok(html.includes("pendingVerdict"), "verdict caption state");
+  assert.ok(html.includes("pverdict"), "verdict caption styling");
+  assert.ok(html.includes("retake-pair"), "pair still offered on the card");
+  assert.ok(html.includes("alertdialog"), "card arrival is assertive");
+  assert.ok(html.includes("Keep document front"), "pair names carry the capture");
+  assert.ok(html.includes("setAttribute('aria-label'"), "accessible pair names");
+});
+
+test("verdict turn sounds before the keep/retake question", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("speak(pendingVerdict)"), "verdict turn spoken");
+  assert.ok(
+    html.indexOf("speak(pendingVerdict)") < html.indexOf("announceLock(res.text)"),
+    "verdict sounds before the question",
+  );
+  assert.ok(html.includes("GENERIC_VERDICT"), "generic verdict fallback");
+});
+
+test("snapshot stays client-side and clears on keep/retake/stop", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("never posted"), "snapshot never leaves the device");
+  assert.ok(html.includes("pendingSnapshot = null"), "snapshot cleared");
+  assert.ok(html.includes("retireCard"), "card retires with review state");
+  assert.ok(html.includes("clearReviewState"), "stop/restart clears review state");
+  assert.ok(html.includes("retireCard()"), "drive retires the card when the pair closes");
+  assert.ok(html.includes("'/keep', {}"), "keep POSTs stay {}");
+  assert.ok(html.includes("'/retake', {}"), "retake POSTs stay {}");
+});
+
+test("stand-in path locks with a fixture label and generic verdict", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("standin-label"), "fixture label styling");
+  assert.ok(html.includes("Stand-in capture"), "fixture label instead of photo");
+  assert.ok(html.includes("pendingStandin"), "stand-in review state");
+  const lockPosts = html.split("'/lock', {}").length - 1;
+  assert.ok(lockPosts >= 2, `live lock and stand-in lock both post /lock (found ${lockPosts})`);
+});
+
+test("focus moves to the card heading and back to the spoken line", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("confirmHeading"), "card heading target");
+  assert.ok(html.includes("focusConfirmHeading"), "focus-in on card appearance");
+  assert.ok(html.includes("focusConfirmHeading()"), "lock paths focus the card");
+  assert.ok(html.includes("spokenEl.focus"), "focus restores to the spoken line");
+  assert.ok(html.includes('id="spoken" aria-live="polite" tabindex="-1"'), "spoken line is focusable");
+});
+
+test("self-voicing yields to screen readers unless the toggle overrides", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("srDetected"), "screen-reader detection");
+  assert.ok(html.includes("voiceOverride"), "user toggle override");
+  assert.ok(html.includes('id="voiceToggle"'), "voice toggle control");
+  assert.ok(html.includes("Voice: auto"), "toggle starts in auto");
+  assert.ok(html.includes("aria-pressed"), "toggle exposes pressed semantics");
+});
+
+test("near-miss echo sounds before the resolved turn", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("step.echo"), "echo carried on the step");
+  assert.ok(html.includes("speak(step.echo)"), "echo spoken first");
+});

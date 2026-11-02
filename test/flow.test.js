@@ -71,10 +71,42 @@ test("unknown utterances in capture stages acknowledge-and-hold", () => {
   assert.equal(held.stage, "awaiting_doc_front");
   assert.equal(held.last_intent, "unknown");
   assert.equal(held.last_turn.kind, "re-ask");
-  assert.match(held.last_turn.text, /staying on this capture/);
+  assert.equal(held.last_turn.text, "Still on the front — hold steady.");
   // Consent/idle stages keep the consent-oriented re-ask.
   const idle = say(startRun("nsw-dl-clean"), "blah blah");
   assert.match(idle.last_turn.text, /I consent/);
+});
+
+test("hold lines rotate across repeats, never the same twice in a row", () => {
+  let c = say(startRun("nsw-dl-clean"), "ready");
+  const first = say(c, "blah one").last_turn.text;
+  const second = say(say(c, "blah one"), "blah two").last_turn.text;
+  const third = say(say(say(c, "blah one"), "blah two"), "blah three").last_turn.text;
+  assert.equal(first, "Still on the front — hold steady.");
+  assert.equal(second, "With you, same capture. Hold there.");
+  assert.equal(third, "Stay with this one — nearly there.");
+  assert.notEqual(first, second);
+  assert.notEqual(second, third);
+  // The noun follows the stage: a hold on the back never says "front".
+  let d = say(startRun("nsw-dl-clean"), "ready");
+  d = signal(d, "front_captured");
+  d = signal(d, "frames_done");
+  assert.equal(d.stage, "awaiting_doc_back");
+  const backHold = say(d, "blah").last_turn.text;
+  assert.equal(backHold, "Still on the back — hold steady.");
+  assert.doesNotMatch(backHold, /front/);
+  // Face-stage nouns and 4th-repeat wrap back to variant 1.
+  let ch = say(startRun("nsw-dl-clean"), "ready");
+  for (const ev of ["front_captured", "frames_done", "back_captured", "frames_done"]) {
+    ch = signal(ch, ev);
+  }
+  assert.equal(ch.stage, "awaiting_challenge");
+  assert.equal(say(ch, "blah").last_turn.text, "Still on the challenge — hold steady.");
+  const se = signal(ch, "challenge_done");
+  assert.equal(se.stage, "awaiting_selfie");
+  assert.equal(say(se, "blah").last_turn.text, "Still on the selfie — hold steady.");
+  const fourth = say(say(say(say(c, "blah one"), "blah two"), "blah three"), "blah four").last_turn.text;
+  assert.equal(fourth, "Still on the front — hold steady.");
 });
 
 test("camera_denied parks capture stages with warn guidance, ignores others", () => {

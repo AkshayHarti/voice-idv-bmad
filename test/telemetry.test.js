@@ -47,6 +47,31 @@ test("clean samples hold still as progress", () => {
   });
 });
 
+test("coaching variants rotate across episodes; escalation stays fixed", () => {
+  // Golden glare pair: 1st episode → a, 2nd → b, 3rd still escalates.
+  assert.equal(coach({ glare: 0.9, turns: 1 }).text, "Tilt the top away from the light.");
+  assert.equal(coach({ glare: 0.9, turns: 2 }).text, "Ease the top back, out of the glare.");
+  assert.equal(coach({ glare: 0.9, turns: 3 }).kind, "warn");
+  // Every fault rotates its two surface forms without changing kind.
+  for (const sample of [
+    { glare: 0.9 },
+    { finger: 0.9 },
+    { occlusion: 0.9 },
+    { skew: 0.9 },
+    { dark: 0.9 },
+    { blur: 0.9 },
+    { missingBack: true },
+    { moire: 0.9 },
+    { screenshot: true },
+  ]) {
+    const first = coach({ ...sample, turns: 1 });
+    const second = coach({ ...sample, turns: 2 });
+    assert.notEqual(first.text, second.text, JSON.stringify(sample));
+    assert.equal(first.kind, second.kind, JSON.stringify(sample));
+    assert.equal(coach({ ...sample, turns: 3 }).kind, "warn", JSON.stringify(sample));
+  }
+});
+
 test("escalation at the retry limit warns with the alternative path", () => {
   assert.equal(COACHING_RETRY_LIMIT, 3);
   for (const sample of [

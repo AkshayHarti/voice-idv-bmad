@@ -55,6 +55,17 @@ test("pending progress binds the retake pair with keep/retake", () => {
   assert.ok(isPanel(panel));
 });
 
+test("panel schema carries no image field; the snapshot stays client-side", () => {
+  for (const kind of KINDS) {
+    const panel = generatePanel(kind, "awaiting_doc_front", {
+      text: "t",
+      pending: true,
+      ref: "cap_1_ab12cd",
+    });
+    assert.ok(!("image" in panel), `${kind} carries no image field`);
+  }
+});
+
 test("unknown kinds and shapes fail closed to text-only", () => {
   const unknown = generatePanel("bogus-kind", "awaiting_doc_front", {
     text: "fallback twin",

@@ -99,10 +99,55 @@ function say(kind: TurnKind, text: string): Turn {
 }
 
 /**
+ * Approved coaching-color variants per fault. Same checklist meaning, two
+ * surface forms each (glare pair is golden); spoken lines stay ≤ ~12 words
+ * with pause-shaping commas. Escalation keeps its single fixed wording.
+ */
+const COACH_VARIANTS: Record<FaultKey, readonly [kind: TurnKind, a: string, b: string]> = {
+  screenshot: [
+    "warn",
+    "This looks like a photo of a screen, use the physical card.",
+    "A photo of a screen won't verify, use the physical card.",
+  ],
+  moire: [
+    "warn",
+    "I see a screen pattern, use the physical card.",
+    "That's a screen photo, use the physical card.",
+  ],
+  missingBack: [
+    "re-ask",
+    "Please flip it over, the Card Number lives there.",
+    "I still need the back, flip it over.",
+  ],
+  glare: [
+    "re-ask",
+    "Tilt the top away from the light.",
+    "Ease the top back, out of the glare.",
+  ],
+  finger: [
+    "re-ask",
+    "Move your thumb off the Card Number.",
+    "Ease your thumb aside, clear the number.",
+  ],
+  skew: [
+    "re-ask",
+    "Straighten the card, show all four corners.",
+    "Straighten up, corners back in frame.",
+  ],
+  dark: [
+    "re-ask",
+    "Move to brighter light, hold steady.",
+    "Find brighter light, keep the phone still.",
+  ],
+};
+
+/**
  * Map one telemetry sample to the next spoken Turn. Priority:
  * screenshot → moiré → missing back → glare → finger → skew → dark.
- * Counter ≥ 3 with a persistent issue → `warn` with a typed-description
- * alternative; the run parks (Rev 2 §4: never a pass, never auto-continue).
+ * The episode count rotates the fault's two surface variants (1st → a,
+ * 2nd → b); counter ≥ 3 with a persistent issue → `warn` with a
+ * typed-description alternative, wording fixed; the run parks (Rev 2 §4:
+ * never a pass, never auto-continue).
  */
 export function coach(t: Telemetry): Turn {
   const turns = t.turns ?? 0;
@@ -110,43 +155,9 @@ export function coach(t: Telemetry): Turn {
   if (fault !== null && turns >= COACHING_RETRY_LIMIT) {
     return say("warn", ESCALATION_TEXT);
   }
-  switch (fault) {
-    case "screenshot":
-      return say(
-        "warn",
-        "This looks like a photo of a screen. Please use your physical card.",
-      );
-    case "moire":
-      return say(
-        "warn",
-        "I see a screen pattern over the card. Please use your physical card, not a photo of a screen.",
-      );
-    case "missingBack":
-      return say(
-        "re-ask",
-        "I still need the back of the card — please flip it over, the Card Number lives there.",
-      );
-    case "glare":
-      return say(
-        "re-ask",
-        "Tilt the top of your licence slightly away from the light to clear the glare on your photo. … Better, hold there.",
-      );
-    case "finger":
-      return say(
-        "re-ask",
-        "Move your right thumb slightly — it's covering the Card Number. … Clear now, hold still.",
-      );
-    case "skew":
-      return say(
-        "re-ask",
-        "Straighten the card so all four corners show. … Good.",
-      );
-    case "dark":
-      return say(
-        "re-ask",
-        "Move to brighter light and hold the phone steadier. … Sharper now.",
-      );
-    case null:
-      return say("progress", "Good framing. Hold still one second…");
+  if (fault === null) {
+    return say("progress", "Good framing. Hold still one second…");
   }
+  const [kind, a, b] = COACH_VARIANTS[fault];
+  return say(kind, turns <= 1 ? a : b);
 }

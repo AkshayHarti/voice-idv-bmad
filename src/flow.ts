@@ -98,9 +98,35 @@ function consentTurn(): Turn {
   return withPanel({ kind: "consent", text: CONSENT_TEXT }, "awaiting_consent");
 }
 
-/** Typed-description alternative: acknowledge the description and hold. */
-const CAPTURE_HOLD_TEXT =
-  "Got that — noted, and we're staying on this capture. Hold still while I keep guiding you.";
+/**
+ * Typed-description alternative: acknowledge the description and hold.
+ * Coaching color rotates across approved surface variants (front set is
+ * golden) so repeats never sound canned; the noun follows the stage so a
+ * hold on the back never says "front". Deterministic round-robin keyed by
+ * the last spoken hold — never random, never the same twice in a row.
+ */
+const HOLD_NOUN: Partial<Record<Stage, string>> = {
+  awaiting_doc_front: "front",
+  awaiting_doc_back: "back",
+  awaiting_challenge: "challenge",
+  awaiting_selfie: "selfie",
+};
+
+function holdVariants(stage: Stage): readonly [string, string, string] {
+  const noun = HOLD_NOUN[stage] ?? "capture";
+  return [
+    `Still on the ${noun} — hold steady.`,
+    "With you, same capture. Hold there.",
+    "Stay with this one — nearly there.",
+  ];
+}
+
+/** Next hold variant for the stage: one past the last spoken, else first. */
+function nextHoldVariant(stage: Stage, lastText: string | undefined): string {
+  const variants = holdVariants(stage);
+  const idx = lastText ? variants.indexOf(lastText) : -1;
+  return variants[(idx + 1) % variants.length];
+}
 
 /** Camera-denied park guidance: explains + names the stand-in path. */
 const CAMERA_DENIED_TEXT =
@@ -270,7 +296,7 @@ export function say(s: FlowState, text: string): FlowState {
         return {
           ...base,
           last_turn: withPanel(
-            { kind: "re-ask", text: CAPTURE_HOLD_TEXT },
+            { kind: "re-ask", text: nextHoldVariant(s.stage, s.last_turn?.text) },
             s.stage,
           ),
         };

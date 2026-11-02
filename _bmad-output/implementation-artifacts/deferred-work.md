@@ -22,3 +22,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-mic-unavailable.md`
   summary: Post microphone failure mix (block/capture/silence counts) so it is observable like the capture counters.
   evidence: review found mic failures emit no telemetry while sibling subsystems count theirs; new API surface, follow-up sized.
+- source_spec: `_bmad-output/implementation-artifacts/spec-human-capture-confirm.md`
+  summary: Confirm the suppressed-mode quality verdict reaches screen readers (it may flash past SR when self-voicing yields).
+  evidence: review maybe-false (medium if true); settle with the on-device VoiceOver/TalkBack pass, then specify a dwell or transcript-announcement rule if the verdict is lost.
+- source_spec: `_bmad-output/implementation-artifacts/spec-human-capture-confirm.md`
+  summary: Add executed DOM/speech-order coverage for the confirm-card lifecycle, verdict/echo ordering, and SR arbitration.
+  evidence: review found page tripwires are string-literal only; no browser harness exists and the on-device lock run is the stated manual gate.
