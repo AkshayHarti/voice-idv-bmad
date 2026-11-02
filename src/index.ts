@@ -824,6 +824,7 @@ let captureStream = null;
 let captureStage = null;
 let sampling = false;
 let sampleInflight = false;
+let sampleFails = 0;
 let sampleTimer = null;
 let lockBusy = false;
 
@@ -908,7 +909,11 @@ async function post(path, body) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(path + ' -> ' + res.status);
+  if (!res.ok) {
+    const err = new Error(path + ' -> ' + res.status);
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 
@@ -935,7 +940,8 @@ function auditPanel(audit) {
 /** Decision screen, data-bound to the generated evidence panel. */
 function renderDecisionFromPanel(panel, report) {
   const verdict = (panel && panel.verdict) || (report && report.decision) || '';
-  const evidence = (panel && panel.evidence) || (report && report.failedFirst) || [];
+  const panelEvidence = panel && panel.evidence;
+  const evidence = (panelEvidence && panelEvidence.length > 0 ? panelEvidence : null) || (report && report.failedFirst) || [];
   const userMessage = (panel && panel.userMessage) || (report && report.userMessage) || '';
   const limitations = (panel && panel.limitations) || (report && report.limitations) || [];
   const fixture = (report && report.fixture) || fixtureId;
@@ -1102,6 +1108,7 @@ async function doKeep() {
     await drive(step);
   } catch {
     busy = false;
+    listenEl.textContent = 'Could not reach the server.';
   }
 }
 
@@ -1117,6 +1124,7 @@ async function doRetake() {
     await drive(step);
   } catch {
     busy = false;
+    listenEl.textContent = 'Could not reach the server.';
   }
 }
 function showCapture(on, stage) {
@@ -1255,6 +1263,7 @@ standinBtn.addEventListener('click', async () => {
   } catch {
     standinBusy = false;
     standinBtn.hidden = false;
+    listenEl.textContent = 'Could not reach the server.';
   }
 });
 
@@ -1272,8 +1281,15 @@ lockBtn.addEventListener('click', async () => {
     renderTranscript(res.transcript);
     renderPanel(res.panel, res.text);
     await announceLock(res.text);
-  } catch {
-    lockBtn.disabled = pendingRef !== null ? true : false;
+  } catch (err) {
+    // Wrong-stage means a stale in-flight lock: stay disabled instead of
+    // inviting another failing tap. Other failures re-enable for a retry.
+    if (err && err.status === 409) {
+      lockBtn.disabled = true;
+    } else {
+      lockBtn.disabled = pendingRef !== null;
+      listenEl.textContent = 'Could not reach the server.';
+    }
   } finally {
     lockBusy = false;
   }
@@ -1335,6 +1351,8 @@ async function sampleTick() {
   const tickStage = captureStage;
   try {
     const res = await post('/api/session/' + sessionId + '/telemetry', videoSample());
+    if (sampleFails >= 10) setCoach('');
+    sampleFails = 0;
     // A stage advance or restart won the race: stale guidance stays out.
     if (sessionId !== tickSession || captureStage !== tickStage) return;
     lockBtn.disabled = !(res.lockReady === true) || pendingRef !== null;
@@ -1346,7 +1364,11 @@ async function sampleTick() {
       renderPanel(res.panel, res.text);
       await speak(res.narration.text);
     }
-  } catch { /* network blip: keep sampling */ }
+  } catch {
+    // A blip stays silent; a dead server says so after ~2s of failures.
+    sampleFails += 1;
+    if (sampleFails >= 10) setCoach('Connection lost — retrying…');
+  }
   finally { sampleInflight = false; }
 }
 async function drive(step) {
@@ -1371,7 +1393,12 @@ async function drive(step) {
   if (READING_SIGNAL[step.stage]) {
     listenEl.textContent = step.stage === 'comparing' ? 'comparing...' : 'reading...';
     await pause(900);
-    return drive(await post('/api/session/' + sessionId + '/signal', { event: READING_SIGNAL[step.stage] }));
+    try {
+      return drive(await post('/api/session/' + sessionId + '/signal', { event: READING_SIGNAL[step.stage] }));
+    } catch {
+      listenEl.textContent = 'Could not reach the server.';
+      return;
+    }
   }
   if (CAPTURE_SIGNAL[step.stage]) {
     listenEl.textContent = '';

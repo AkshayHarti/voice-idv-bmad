@@ -64,7 +64,7 @@ test("retake pair and panel renderer with no dead controls", async () => {
   assert.ok(html.includes("retake-pair"), "retake-pair primitive renders");
   assert.ok(html.includes("'/keep'") || html.includes("/keep"), "Keep posts to keep");
   assert.ok(html.includes("'/retake'") || html.includes("/retake"), "Retake posts to retake");
-  assert.ok(!html.includes("retry"), "no dead retry control");
+  assert.ok(!html.includes("'retry'"), "no dead retry control");
 });
 
 test("late responses are dropped; stand-in cannot double-fire or stall", async () => {
@@ -74,6 +74,17 @@ test("late responses are dropped; stand-in cannot double-fire or stall", async (
   assert.ok(html.includes("lockSession"), "lock staleness token");
   assert.ok(html.includes("standinBusy"), "stand-in busy guard");
   assert.ok(html.includes("drawGuides(captureStage, false)"), "retake redraws guidance guides");
+});
+
+test("failure paths message instead of stalling silently", async () => {
+  const html = await getPage();
+  const serverMsg = html.split("Could not reach the server.").length - 1;
+  assert.ok(serverMsg >= 6, `every failure catch messages (found ${serverMsg})`);
+  assert.ok(html.includes("sampleFails"), "sampler counts consecutive failures");
+  assert.ok(html.includes("Connection lost"), "dead server announced on coach card");
+  assert.ok(html.includes("panelEvidence"), "empty panel evidence falls back to report");
+  assert.ok(html.includes("err.status"), "thrown errors carry HTTP status");
+  assert.ok(html.includes("err.status === 409"), "stale lock stays disabled");
 });
 
 test("telemetry stays numeric; v1 zero-heuristics are disclosed", async () => {
