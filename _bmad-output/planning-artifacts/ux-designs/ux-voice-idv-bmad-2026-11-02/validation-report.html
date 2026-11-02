@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UX Design Validation: Halo (voice-idv-bmad)</title>
+<style>
+  :root {
+    --bg: #fafaf9;
+    --surface: #ffffff;
+    --border: #e7e5e4;
+    --text: #1c1917;
+    --muted: #78716c;
+    --verdict-strong: #16a34a;
+    --verdict-adequate: #65a30d;
+    --verdict-thin: #d97706;
+    --verdict-broken: #dc2626;
+    --sev-low: #64748b;
+    --sev-medium: #ca8a04;
+    --sev-high: #ea580c;
+    --sev-critical: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+  header.report-header {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+    padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 24px;
+  }
+  .title h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .title .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .synthesis {
+    background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--muted);
+    border-radius: 8px; padding: 18px 22px; margin-bottom: 24px; font-size: 15.5px;
+  }
+  .synthesis p { margin: 0 0 10px; }
+  .synthesis p:last-child { margin-bottom: 0; }
+  .dimension-summary {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 24px;
+  }
+  .dim-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .dim-card .dim-name { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .dim-card .dim-verdict { font-size: 14px; font-weight: 600; }
+  section.dimension, section.reviewer-section { margin-bottom: 14px; }
+  section.dimension details, section.reviewer-section details {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  }
+  section summary { padding: 14px 20px; cursor: pointer; user-select: none; list-style: none; display: flex; align-items: center; gap: 12px; }
+  section summary::-webkit-details-marker { display: none; }
+  section summary::before { content: "▸"; display: inline-block; color: var(--muted); transition: transform 0.15s ease; }
+  section details[open] summary::before { transform: rotate(90deg); }
+  section summary h2 { display: inline; margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.005em; flex: 1; }
+  .verdict-pill { font-size: 11px; padding: 3px 10px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: white; }
+  .verdict-strong { background: var(--verdict-strong); }
+  .verdict-adequate { background: var(--verdict-adequate); }
+  .verdict-thin { background: var(--verdict-thin); }
+  .verdict-broken { background: var(--verdict-broken); }
+  .dim-body { padding: 4px 20px 18px; }
+  .dim-judgment { color: var(--text); font-size: 14.5px; }
+  .dim-judgment p { margin: 0 0 10px; }
+  .findings-list { padding: 0 20px 4px; }
+  article.finding { padding: 14px 0; border-top: 1px solid var(--border); }
+  article.finding:first-child { border-top: none; }
+  article.finding header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .badge { font-size: 10.5px; padding: 3px 8px; border-radius: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; line-height: 1.4; }
+  .badge-sev-low { background: rgba(100, 116, 139, 0.12); color: var(--sev-low); }
+  .badge-sev-medium { background: rgba(202, 138, 4, 0.14); color: var(--sev-medium); }
+  .badge-sev-high { background: rgba(234, 88, 12, 0.14); color: var(--sev-high); }
+  .badge-sev-critical { background: rgba(220, 38, 38, 0.14); color: var(--sev-critical); }
+  .badge-sev-info { background: rgba(100, 116, 139, 0.12); color: var(--sev-low); }
+  .finding-title { margin: 0; font-size: 15px; font-weight: 500; flex: 1; min-width: 200px; }
+  .finding-location { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--muted); }
+  .finding-note, .finding-fix { margin-top: 6px; font-size: 14px; }
+  .finding-fix strong { color: var(--muted); font-weight: 500; }
+  .reviewer-source { font-size: 12px; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .mechanical { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin-top: 24px; font-size: 14px; }
+  .mechanical h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .mechanical ul { margin: 0; padding-left: 20px; }
+  .mechanical li { margin-bottom: 4px; color: var(--text); }
+  footer.report-footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  footer .meta { display: flex; gap: 24px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <header class="report-header">
+      <div class="title">
+        <h1>Halo (voice-idv-bmad) — UX Design Validation Report</h1>
+        <div class="subtitle">_bmad-output/planning-artifacts/ux-designs/ux-voice-idv-bmad-2026-11-02/</div>
+      </div>
+    </header>
+    <div class="synthesis">
+      <p><strong>Rubric: adequate.</strong> The pair is a strong contract on flows, tokens, shape, and the nine core components — but the visual-reference layer is broken (an orphan mock recommends the placement the spine bans), and two load-bearing decisions are uncommitted (typed-input spec, contrast targets). Fix the 3 majors and the pair is strong.</p>
+      <p><strong>Accessibility shifts the picture: not shippable as specified.</strong> The confirm card — the centerpiece of this round — is an eyesight gate smuggled into a product whose founding promise is screen-unread completion. A blind user asked to Keep/Retake an image gets no spoken quality description, no non-visual review path, and no defined alt semantics. The spines never arbitrate browser TTS against screen-reader announcements, never say where focus goes when DOM nodes dock and retire mid-run, and let variation rotation erode the predictability assistive-technology users depend on. Fix the two criticals before anything else.</p>
+      <p><strong>Synthesis notes.</strong> Rubric severities mapped major→high, minor→medium. One accessibility medium (missing confirm-card mock) was invalidated during synthesis — <code>.working/confirm-card-mock.html</code> exists; its verification checklist still applies and is preserved below.</p>
+    </div>
+    <div class="dimension-summary">
+      <div class="dim-card"><div class="dim-name">1. Flow coverage</div><div class="dim-verdict" style="color: var(--verdict-strong)">strong</div></div>
+      <div class="dim-card"><div class="dim-name">2. Token completeness</div><div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div></div>
+      <div class="dim-card"><div class="dim-name">3. Component coverage</div><div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div></div>
+      <div class="dim-card"><div class="dim-name">4. State coverage</div><div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div></div>
+      <div class="dim-card"><div class="dim-name">5. Visual reference coverage</div><div class="dim-verdict" style="color: var(--verdict-broken)">broken</div></div>
+      <div class="dim-card"><div class="dim-name">6. Bloat &amp; overspecification</div><div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div></div>
+      <div class="dim-card"><div class="dim-name">7. Inheritance discipline</div><div class="dim-verdict" style="color: var(--verdict-adequate)">adequate</div></div>
+      <div class="dim-card"><div class="dim-name">8. Shape fit</div><div class="dim-verdict" style="color: var(--verdict-strong)">strong</div></div>
+    </div>
+
+    <section class="dimension">
+      <details>
+        <summary><h2>1. Flow coverage</h2><span class="verdict-pill verdict-strong">strong</span></summary>
+        <div class="dim-body"><div class="dim-judgment">
+          <p>Frontmatter sources resolve. The source spec's named demo paths ("1 clean + 1 tampered voice-complete run") both have Key Flows with named protagonist, numbered steps, climax beat, and failure path. No findings.</p>
+        </div></div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary><h2>2. Token completeness</h2><span class="verdict-pill verdict-adequate">adequate</span></summary>
+        <div class="dim-body"><div class="dim-judgment">
+          <p>All 12 color tokens carry hex; all frontmatter and prose token refs resolve. No critical misses. One load-bearing gap: contrast targets.</p>
+        </div></div>
+        <div class="findings-list">
+          <article class="finding">
+            <header><span class="badge badge-sev-high">high</span><h3 class="finding-title">No contrast target stated for any UI combination</h3><span class="finding-location">EXPERIENCE.md:92 → DESIGN.md:90-99</span></header>
+            <div class="finding-note">The deferral pointer dangles: EXPERIENCE.md sends visual contrast to DESIGN.md, whose Colors section gives only "lowest legible contrast" prose for hairlines. Load-bearing combos (12px tracked-cap meta, 13px mono evidence, verdict hues on dark) have no committed ratio, and there is no inherited system to fall back on.</div>
+            <div class="finding-fix"><strong>Fix:</strong> one line per load-bearing pair with a target ratio, or a blanket WCAG AA statement with measured values.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">"All token references resolve" claims a file with zero token refs</h3><span class="finding-location">EXPERIENCE.md:17</span></header>
+            <div class="finding-note">Boilerplate leftover: the only match for the pattern is the literal placeholder in that sentence.</div>
+            <div class="finding-fix"><strong>Fix:</strong> delete the clause or convert backticked role mentions to real {typography.*} refs.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Loose token hygiene in DESIGN.md</h3><span class="finding-location">DESIGN.md:124, :64, :130</span></header>
+            <div class="finding-note">L124 references the whole {typography.spoken} object instead of a leaf; capture-frame.warn is never invoked in prose; the Decision banner verdict size is a bare 30px literal with no token.</div>
+            <div class="finding-fix"><strong>Fix:</strong> point L124 at leaf paths; spec the warn-guide state or drop the token; tokenize the verdict size or cite spoken.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary><h2>3. Component coverage</h2><span class="verdict-pill verdict-adequate">adequate</span></summary>
+        <div class="dim-body"><div class="dim-judgment">
+          <p>All 9 named components have real multi-clause rules in both spines. The misses are secondary elements — except the typed input row, which is the dock anchor and the guaranteed fallback.</p>
+        </div></div>
+        <div class="findings-list">
+          <article class="finding">
+            <header><span class="badge badge-sev-high">high</span><h3 class="finding-title">Typed input / Listen row has no component row in either spine</h3><span class="finding-location">EXPERIENCE.md:58, :61, :86, :98</span></header>
+            <div class="finding-note">The dock anchor ("dock zone above the input/Listen row") and the guaranteed fallback ("typing never does [fail]") have no visual or behavioral contract. A consumer building the dock zone has no spec for the thing it docks above.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a "Typed input / Listen row" row to both tables (placement, chrome, focus, placeholder/voice-unavailable treatment).</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Generated-panel primitives lack per-primitive rules</h3><span class="finding-location">EXPERIENCE.md:60, :127</span></header>
+            <div class="finding-note">Confirm row, choice list, progress steps, evidence peek, retake pair are named but unspecified beyond "every choice has a text equivalent".</div>
+            <div class="finding-fix"><strong>Fix:</strong> one rule line per primitive in the Generated panel rows, or a small primitives table in the Generated UI Contract.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Attack Surface / audit panel has no component row</h3><span class="finding-location">EXPERIENCE.md:64, :75, :118, :130</span></header>
+            <div class="finding-note">Named in four places; trigger control, placement, and loading/timeout UI unspecified.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a row to both tables, or fold explicit rules into the Decision banner rows.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Abort-confirm sheet spec scattered outside component tables</h3><span class="finding-location">DESIGN.md:115; EXPERIENCE.md:78</span></header>
+            <div class="finding-note">A consumer extracting component rows misses it.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add an abort-sheet row to both tables, or cross-link from the Consent gate rows.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">"Status dots" own rounded/full but exist nowhere else</h3><span class="finding-location">DESIGN.md:119</span></header>
+            <div class="finding-note">Named once, specified nowhere.</div>
+            <div class="finding-fix"><strong>Fix:</strong> spec them in one sentence or delete the mention.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary><h2>4. State coverage</h2><span class="verdict-pill verdict-adequate">adequate</span></summary>
+        <div class="dim-body"><div class="dim-judgment">
+          <p>All four surfaces walked; cold open, listening, coaching, capturing, processing, decided, offline, camera-denied, abort, and deny/revoke covered. Each miss has adjacent coverage that softens it.</p>
+        </div></div>
+        <div class="findings-list">
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Mic permission denied has no state</h3><span class="finding-location">EXPERIENCE.md State Patterns</span></header>
+            <div class="finding-note">Voice-may-fail is acknowledged, but the denial moment — announcement, orb state, path to typed-only mode — is unspecified in a voice-first product.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a "Mic denied" row to State Patterns.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Camera initializing / cold-load has no state</h3><span class="finding-location">EXPERIENCE.md:73</span></header>
+            <div class="finding-note">"Frame guides live" assumes a warm camera; permission-pending, warm-up, and black-preview UI are unspecified.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a "Camera starting" row (skeleton/black-preview + spoken line).</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Capture failure has no state</h3><span class="finding-location">EXPERIENCE.md:73</span></header>
+            <div class="finding-note">Lock success is fully choreographed but a failed frame grab has no treatment.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a "Capture failed" row (silent retry vs coach-card notice + spoken line).</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details open>
+        <summary><h2>5. Visual reference coverage</h2><span class="verdict-pill verdict-broken">broken</span></summary>
+        <div class="dim-body"><div class="dim-judgment">
+          <p>Two rendered mocks sit in .working/, unlinked from both spines, with no spines-win-on-conflict rule — and one of them recommends the placement the spine bans.</p>
+        </div></div>
+        <div class="findings-list">
+          <article class="finding">
+            <header><span class="badge badge-sev-high">high</span><h3 class="finding-title">Orphan placement mock recommends the banned behavior</h3><span class="finding-location">.working/capture-placement-compare.html:48</span></header>
+            <div class="finding-note">Tags option A ("Scroll into view — frame lives at top") RECOMMENDED while the spine commits placement C and DESIGN.md:141 explicitly bans A's behavior. No conflict rule settles it.</div>
+            <div class="finding-fix"><strong>Fix:</strong> link the file from the IA Capture row and Layout section naming C as the decision and A/B as rejected, update its RECOMMENDED tag, or delete it.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Confirm-card mock illustrates faithfully but is orphaned</h3><span class="finding-location">.working/confirm-card-mock.html</span></header>
+            <div class="finding-note">Authority unclear — linked nowhere.</div>
+            <div class="finding-fix"><strong>Fix:</strong> link it inline from both Confirm card rows naming what it illustrates, or delete it.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">"No mocks rendered" claim is false</h3><span class="finding-location">EXPERIENCE.md:30</span></header>
+            <div class="finding-note">"Spine-only in v1 (no mocks rendered; fast path)" while .working/ holds two rendered mocks.</div>
+            <div class="finding-fix"><strong>Fix:</strong> correct the line to name the .working/ files as non-normative exploration, or remove the files.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">No spines-win-on-conflict statement exists</h3><span class="finding-location">EXPERIENCE.md:30</span></header>
+            <div class="finding-note">"Surfaces build from these tables alone" is a build note, not a conflict rule; DESIGN.md is silent.</div>
+            <div class="finding-fix"><strong>Fix:</strong> state once, next to the IA composition line, that spines win on conflict with any mock.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary><h2>6. Bloat &amp; overspecification</h2><span class="verdict-pill verdict-adequate">adequate</span></summary>
+        <div class="dim-body"><div class="dim-judgment">
+          <p>Density is information here: the novel core is specified, genuine guesses flagged [ASSUMPTION]. One discipline slip.</p>
+        </div></div>
+        <div class="findings-list">
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Invented capture minimums inconsistently flagged</h3><span class="finding-location">EXPERIENCE.md:140-144</span></header>
+            <div class="finding-note">Laplacian and MRZ contrast carry [ASSUMPTION], but the equally invented minimums (1600px / 720p / 1080px, 25% oval, ±15% centering, 3+ frames, 60–90% fill) do not — none found in the source spec. Unflagged numbers read as committed requirements.</div>
+            <div class="finding-fix"><strong>Fix:</strong> flag the invented minimums [ASSUMPTION] or cite their source.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary><h2>7. Inheritance discipline</h2><span class="verdict-pill verdict-adequate">adequate</span></summary>
+        <div class="dim-body"><div class="dim-judgment">
+          <p>Clean scoping, no UI-system restating, offline rationale for system fonts. One unresolvable pointer.</p>
+        </div></div>
+        <div class="findings-list">
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Inherited-pattern pointers give no repo path</h3><span class="finding-location">EXPERIENCE.md:17; DESIGN.md:96</span></header>
+            <div class="finding-note">"The current demo page's proven patterns" and "the demo's existing verdict semantics" can't be resolved by a consumer. Softened: the patterns and hues are restated inline.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add the demo page path, or state "patterns fully restated below; no external lookup needed".</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary><h2>8. Shape fit</h2><span class="verdict-pill verdict-strong">strong</span></summary>
+        <div class="dim-body"><div class="dim-judgment">
+          <p>DESIGN.md carries all 8 canonical sections in locked order with spec-matching token types. EXPERIENCE.md has every required default; the three invented sections are labeled "Product-specific" and earn their place. No findings.</p>
+        </div></div>
+      </details>
+    </section>
+
+    <section class="reviewer-section">
+      <details>
+        <summary>
+          <h2>Accessibility review — not shippable as specified</h2>
+          <span class="reviewer-source">review-accessibility.md</span>
+        </summary>
+        <div class="dim-body"><div class="dim-judgment">
+          <p>The confirm card is an eyesight gate smuggled into a product whose founding promise is screen-unread completion. The spines loudly declare "a blind keep/retake with no image is a bug" while shipping the exact inverse bug: a blind user for whom the image <em>is</em> nothing gets no spoken quality description, no non-visual review path, and no defined alt semantics. The Accessibility Floor reads as if the confirm card was designed first and the floor was never re-checked against it. 2 critical, 5 high, 7 medium (1 invalidated in synthesis), 4 low.</p>
+        </div></div>
+        <div class="findings-list">
+          <article class="finding">
+            <header><span class="badge badge-sev-critical">critical</span><h3 class="finding-title">Confirm card is unreviewable non-visually</h3><span class="finding-location">Confirm card row; Choreography; Accessibility Floor</span></header>
+            <div class="finding-note">A screen-unread user is asked to Keep/Retake an image they cannot inspect, with no spoken quality description — contradicting the founding requirement.</div>
+            <div class="finding-fix"><strong>Fix:</strong> mandatory spoken + text quality verdict before the keep/retake question ("Front captured: sharp, all four corners visible, no glare. Keep it, or retake?"), derived from coaching telemetry. A keep/retake with no non-visual quality statement is a bug, same weight as the blind-keep bug.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-critical">critical</span><h3 class="finding-title">No TTS / screen-reader arbitration</h3><span class="finding-location">Voice and Tone; Accessibility Floor SR row</span></header>
+            <div class="finding-note">Browser synthesis speaks the line while aria-live regions announce the same or competing updates — SR users hear doubled or overlapping speech with no stated strategy.</div>
+            <div class="finding-fix"><strong>Fix:</strong> one coherent policy: the spoken-line text twin IS the live region (single source), TTS and SR never fed duplicate strings, plus an "SR detected → suppress self-voicing TTS" rule or explicit toggle. Test with VoiceOver + TalkBack with TTS on.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-high">high</span><h3 class="finding-title">Captured-image alt semantics unspecified</h3><span class="finding-location">DESIGN.md Confirm card; EXPERIENCE.md Confirm card row</span></header>
+            <div class="finding-note">Decorative alt="" with the caption carrying meaning, or informative alt carrying quality state — the spines say neither, inviting double-announcement or a silent image.</div>
+            <div class="finding-fix"><strong>Fix:</strong> image alt="" (decorative) + a real caption element holding the quality verdict; or informative alt ONLY if no visible caption duplicates it. Never a filename/framestamp as alt.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-high">high</span><h3 class="finding-title">Live-region politeness for the confirm card unspecified</h3><span class="finding-location">Accessibility Floor; Spoken line row</span></header>
+            <div class="finding-note">A blocking question with a retire-on-answer lifecycle gets no level, and its arrival races the per-Turn spoken-line update.</div>
+            <div class="finding-fix"><strong>Fix:</strong> assertive (or role="alertdialog" semantics) for confirm-card arrival; document ordering vs the spoken-line update so SR users never hear the question before the quality verdict.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-high">high</span><h3 class="finding-title">Focus management across docking / appear / retire unspecified</h3><span class="finding-location">Capture frame + Coach card + Confirm card rows; Floor focus order</span></header>
+            <div class="finding-note">Frame node moves, coach cards replace, confirm card appears then vanishes — each can drop focus to &lt;body&gt;, and "focus order follows reading order" is contradicted by reordered DOM.</div>
+            <div class="finding-fix"><strong>Fix:</strong> focus moves to the confirm card heading (or Keep button) on appearance; on keep/retake focus returns to a named target; docking never moves the focused element; retiring a focused node moves focus before removal. Test keyboard-only, SR off.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-high">high</span><h3 class="finding-title">Keep/Retake accessible names lack stage context</h3><span class="finding-location">Confirm card row; Interaction Primitives</span></header>
+            <div class="finding-note">The same bare "Keep" / "Retake" repeats across all four stages — an unlabeled choice out of context for SR and voice-control users.</div>
+            <div class="finding-fix"><strong>Fix:</strong> accessible names carry the capture ("Keep document front" / "Retake document front"); visible text may stay short.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-high">high</span><h3 class="finding-title">Variation rotation breaks the predictability AT users rely on</h3><span class="finding-location">Variation policy; Inspiration</span></header>
+            <div class="finding-note">N phrasings for one meaning: unsearchable transcript, no stable phrase for voice-control/switch users to learn. Recognition tolerance fixes input but the spines celebrate unpredictable output.</div>
+            <div class="finding-fix"><strong>Fix:</strong> exempt functional prompts (consent, keep/retake, abort) from rotation — fixed wording there — cap rotation to coaching color; meaning-identical lines share one transcript tag so SR search still works.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Near-miss resolution has no confirmation echo</h3><span class="finding-location">Interaction Primitives recognition-tolerant</span></header>
+            <div class="finding-note">"kep it" resolves to Keep, but the resolution is never announced — a mis-resolved utterance silently acts. Transcript rule doesn't say whether heard-form, resolved-form, or both are recorded.</div>
+            <div class="finding-fix"><strong>Fix:</strong> always echo the resolution in spoken twin + text ("Keeping the front."); record heard → resolved in the transcript; low-confidence near-misses re-ask instead of resolving.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Reduced-motion docking unspecified</h3><span class="finding-location">DESIGN.md Capture frame; Floor Reduced motion row</span></header>
+            <div class="finding-note">Docking "animates opacity/position" and "scrolls into view," but reduced-motion rules cover only glow/flash/transitions — smooth scroll on every stage is a vestibular hit the Floor forgot.</div>
+            <div class="finding-fix"><strong>Fix:</strong> under prefers-reduced-motion, docking is instant (no smooth scroll, no animation); state change still announced via live region + haptic.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-info">info</span><h3 class="finding-title">Confirm-card mock verification checklist (finding invalidated — mock exists)</h3><span class="finding-location">.working/confirm-card-mock.html</span></header>
+            <div class="finding-note">The reviewer could not see the mock; synthesis confirmed it exists. Its checklist still applies.</div>
+            <div class="finding-fix"><strong>Fix:</strong> verify: image alt per this review, one assertive arrival announcement, focus-into-card on appear with focus-restore on retire, context-carrying button names, ≥44pt targets with ≥8px gaps, full keyboard operability.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">10s silence re-ask can fire while a screen reader is still announcing</h3><span class="finding-location">State Patterns Listening row</span></header>
+            <div class="finding-note">SR output takes longer than TTS; neither the timeout nor the re-ask accounts for SR latency.</div>
+            <div class="finding-fix"><strong>Fix:</strong> extend/suppress the silence timer while SR announcements are pending where detectable; at minimum the re-ask must not interrupt an in-progress announcement and must itself be polite-queued.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Coach-card diagram slot has no text-equivalent rule</h3><span class="finding-location">Coach card rows (both spines)</span></header>
+            <div class="finding-note">The spatial diagram is exactly the image-only instruction a screen-unread user cannot use, and the Generated panel text-equivalent rule doesn't cover coach cards.</div>
+            <div class="finding-fix"><strong>Fix:</strong> every diagram ships with a text twin at least as specific as the visual — or the slot is decorative-only by contract and the imperative alone must suffice.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Tap-to-mute can kill the founding channel with no caption backstop</h3><span class="finding-location">Voice orb row; Captions row</span></header>
+            <div class="finding-note">Muting silences speech; the spines never say a muted run still renders text twins (nothing is technically "spoken") — mute + screen-unread is a dead end.</div>
+            <div class="finding-fix"><strong>Fix:</strong> mute changes audio output only — text twins and live-region announcements continue unchanged; mute state itself is announced and captioned ("Muted. Captions continue.").</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">Lock signal may be color-only in the static visual</h3><span class="finding-location">DESIGN.md Capture frame; State Patterns Capturing row</span></header>
+            <div class="finding-note">Guides flip blue→green with a flash, but no shape/label change is specified — hue is the only visual delta for low-vision and colorblind users.</div>
+            <div class="finding-fix"><strong>Fix:</strong> pair the color change with a shape or label change (check-ticks, capturing… → locked); keep the spoken + haptic lock signal unconditional.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-low">low</span><h3 class="finding-title">Pause-shaping commas leak into SR/braille twins</h3><span class="finding-location">Voice and Tone Speech shaping</span></header>
+            <div class="finding-note">TTS-tuned commas will be honored or stumbled over by screen readers and braille displays reading the same text twin.</div>
+            <div class="finding-fix"><strong>Fix:</strong> verify with at least one SR + braille pass that shaped lines read cleanly; allow the text twin to differ in punctuation from the TTS string if SR testing demands it.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-low">low</span><h3 class="finding-title">Barge-in marking has no announcement rule</h3><span class="finding-location">Interaction Primitives; Transcript turn row</span></header>
+            <div class="finding-note">Interruption "stops synthesis immediately and the partial line is marked" — marked how, and announced or silently visual?</div>
+            <div class="finding-fix"><strong>Fix:</strong> a polite live-region note ("Interrupted.") plus a transcript marker with an accessible label, not a color/tick-only cue.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-low">low</span><h3 class="finding-title">Tap-target spacing and orb size underspecified</h3><span class="finding-location">Accessibility Floor; DESIGN.md Voice orb</span></header>
+            <div class="finding-note">"≥44pt" with no inter-target gap; the orb mute toggle has no size at all; the docked Keep/Retake pair is exactly where cramped targets happen.</div>
+            <div class="finding-fix"><strong>Fix:</strong> minimum 8px gaps between Keep/Retake and the input row, orb ≥44pt, documented accessible path for the long-press function.</div>
+          </article>
+          <article class="finding">
+            <header><span class="badge badge-sev-low">low</span><h3 class="finding-title">Confirm-card image has no transcript standing</h3><span class="finding-location">Transcript turn row; Confirm card retire rule</span></header>
+            <div class="finding-note">The transcript is "the accessible record," but the confirm step may vanish with the retired card.</div>
+            <div class="finding-fix"><strong>Fix:</strong> log one transcript turn per confirm step — capture name, quality verdict, decision — so the record survives the card's retirement.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <div class="mechanical">
+      <h3>Mechanical notes</h3>
+      <ul>
+        <li>Flow 1 (Sienna) and Flow 2 (Tom) each have protagonist, numbered steps, <strong>Climax:</strong> beat, <strong>Failure:</strong> line. Consent-deny, abort, retake-loop covered as states/panels — acceptable.</li>
+        <li>Token extraction: 12/12 colors with hex; roles spoken/body/meta/evidence; rounded sm/md/lg/full; spacing 1–7; 8 component token objects. Every {path} ref in DESIGN.md resolves; EXPERIENCE.md has none.</li>
+        <li>Key Flows sit mid-file rather than last as in the examples; no order lock applies to EXPERIENCE.md — not a finding.</li>
+        <li>imports/ is empty; mockups/ and wireframes/ do not exist — no action.</li>
+        <li>Rubric severity scale: critical = blocks source-extraction or silently misdirects core behavior; major = load-bearing gap a consumer will likely trip on; minor = real gap with adjacent coverage, or cheap fix.</li>
+      </ul>
+    </div>
+
+    <footer class="report-footer">
+      <div class="meta">
+        <span>Rubric: review-rubric.md</span>
+        <span>Extra: review-accessibility.md</span>
+        <span>Generated: 2026-11-03T09:34</span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>
