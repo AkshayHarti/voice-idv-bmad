@@ -886,6 +886,22 @@ function setOrb(state) {
   orbEl.setAttribute('aria-label', 'Assistant voice state: ' + state);
 }
 
+/** Friendly-female voice preference; null falls back to the default voice. */
+const FEMALE_VOICE_HINT = /female|samantha|zira|aria|jenny|sonia|neerja|kate|serena|victoria/i;
+function pickVoice() {
+  try {
+    const voices = speechSynthesis.getVoices();
+    if (!voices || voices.length === 0) return null;
+    const en = voices.filter((v) => (v.lang || '').toLowerCase().startsWith('en'));
+    const pool = en.length > 0 ? en : voices;
+    return pool.find((v) => FEMALE_VOICE_HINT.test(v.name || '')) ?? null;
+  } catch {
+    return null;
+  }
+}
+// Prime the engine's voice list at load so the preferred voice is ready
+// sooner; Chrome populates getVoices() asynchronously after first call.
+try { speechSynthesis.getVoices(); } catch { /* no TTS - speak() guards */ }
 function speak(text) {
   return new Promise((resolve) => {
     if (!window.speechSynthesis || !text) return resolve();
@@ -893,7 +909,13 @@ function speak(text) {
     let done = false;
     const finish = () => { if (!done) { done = true; setOrb('idle'); resolve(); } };
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.02;
+    u.rate = 1.0;
+    u.pitch = 1.1;
+    const voice = pickVoice();
+    if (voice) {
+      u.voice = voice;
+      if (voice.lang) u.lang = voice.lang;
+    }
     u.onend = finish;
     u.onerror = finish;
     speechSynthesis.speak(u);

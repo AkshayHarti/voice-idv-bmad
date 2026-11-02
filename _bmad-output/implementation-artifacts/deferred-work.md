@@ -13,3 +13,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-goal-2-assistant-concept.md`
   summary: Fire a fresh instruct Turn when the DL-back auto-park parks at awaiting_doc_back instead of keeping the stale front Turn.
   evidence: review found backMissing auto-park predates Goal 2 with a stale last_turn that generated panels now render.
+- source_spec: `_bmad-output/implementation-artifacts/spec-friendlier-voice.md`
+  summary: Add the auto-capture re-vote banner to brainstorm.html so the keepsake alone cannot mislead an implementer.
+  evidence: review found the keepsake declares AUTO-CAPTURE ALWAYS decided while the intent doc records cluster 3 dropped with re-vote open.

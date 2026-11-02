@@ -76,6 +76,14 @@ test("late responses are dropped; stand-in cannot double-fire or stall", async (
   assert.ok(html.includes("drawGuides(captureStage, false)"), "retake redraws guidance guides");
 });
 
+test("speech prefers a friendly female voice", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("pickVoice"), "voice picker present");
+  assert.ok(html.includes("getVoices"), "selects from system voices");
+  assert.ok(html.includes("u.voice = voice"), "picked voice is wired into the utterance");
+  assert.ok(html.includes("u.pitch"), "warmer pitch tuning");
+});
+
 test("failure paths message instead of stalling silently", async () => {
   const html = await getPage();
   const routed = html.split("postError(err)").length - 1;
