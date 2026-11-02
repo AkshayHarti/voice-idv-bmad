@@ -78,13 +78,18 @@ test("late responses are dropped; stand-in cannot double-fire or stall", async (
 
 test("failure paths message instead of stalling silently", async () => {
   const html = await getPage();
-  const serverMsg = html.split("Could not reach the server.").length - 1;
-  assert.ok(serverMsg >= 6, `every failure catch messages (found ${serverMsg})`);
+  const routed = html.split("postError(err)").length - 1;
+  assert.ok(routed >= 6, `every failure catch routes through postError (found ${routed})`);
+  assert.ok(html.includes("Session expired"), "expired sessions name the recovery");
+  assert.ok(html.includes("err.status === 404"), "404 diagnosed separately");
+  assert.ok(html.split("sampleFails = 0").length - 1 >= 3, "fail counter resets with capture lifecycle");
+  assert.ok(html.split("setCoach('')").length - 1 >= 3, "coach clears when capture stops");
   assert.ok(html.includes("sampleFails"), "sampler counts consecutive failures");
   assert.ok(html.includes("Connection lost"), "dead server announced on coach card");
   assert.ok(html.includes("panelEvidence"), "empty panel evidence falls back to report");
   assert.ok(html.includes("err.status"), "thrown errors carry HTTP status");
   assert.ok(html.includes("err.status === 409"), "stale lock stays disabled");
+  assert.ok(html.includes("Something went wrong"), "malformed steps bail with recovery");
 });
 
 test("telemetry stays numeric; v1 zero-heuristics are disclosed", async () => {

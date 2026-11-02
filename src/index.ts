@@ -917,6 +917,16 @@ async function post(path, body) {
   return res.json();
 }
 
+/**
+ * One honest message per failure kind: an expired session needs Start,
+ * anything else is the network.
+ */
+function postError(err) {
+  return err && err.status === 404
+    ? 'Session expired — press Start to begin again.'
+    : 'Could not reach the server.';
+}
+
 function pause(ms) { return new Promise(r => setTimeout(r, ms)); }
 function auditPanel(audit) {
   const details = document.createElement('details');
@@ -1106,9 +1116,9 @@ async function doKeep() {
     const step = await post('/api/session/' + sessionId + '/keep', {});
     busy = false;
     await drive(step);
-  } catch {
+  } catch (err) {
     busy = false;
-    listenEl.textContent = 'Could not reach the server.';
+    listenEl.textContent = postError(err);
   }
 }
 
@@ -1122,9 +1132,9 @@ async function doRetake() {
     captureFrame.classList.remove('locked');
     drawGuides(captureStage, false);
     await drive(step);
-  } catch {
+  } catch (err) {
     busy = false;
-    listenEl.textContent = 'Could not reach the server.';
+    listenEl.textContent = postError(err);
   }
 }
 function showCapture(on, stage) {
@@ -1176,6 +1186,8 @@ function stopCaptureTracks() {
 function stopCapture() {
   sampling = false;
   sampleInflight = false;
+  sampleFails = 0;
+  setCoach('');
   stopCaptureTracks();
   captureStage = null;
   if (sampleTimer !== null) { clearInterval(sampleTimer); sampleTimer = null; }
@@ -1221,6 +1233,7 @@ async function startCapture(stage) {
   drawGuides(stage, false);
   sampling = true;
   sampleInflight = false;
+  sampleFails = 0;
   if (sampleTimer === null) sampleTimer = setInterval(sampleTick, 200);
   lockBtn.disabled = pendingRef !== null;
 }
@@ -1260,10 +1273,10 @@ standinBtn.addEventListener('click', async () => {
     const next = await post('/api/session/' + sessionId + '/signal', { event: CAPTURE_SIGNAL[captureStage] });
     standinBusy = false;
     await drive(next);
-  } catch {
+  } catch (err) {
     standinBusy = false;
     standinBtn.hidden = false;
-    listenEl.textContent = 'Could not reach the server.';
+    listenEl.textContent = postError(err);
   }
 });
 
@@ -1288,7 +1301,7 @@ lockBtn.addEventListener('click', async () => {
       lockBtn.disabled = true;
     } else {
       lockBtn.disabled = pendingRef !== null;
-      listenEl.textContent = 'Could not reach the server.';
+      listenEl.textContent = postError(err);
     }
   } finally {
     lockBusy = false;
@@ -1372,6 +1385,12 @@ async function sampleTick() {
   finally { sampleInflight = false; }
 }
 async function drive(step) {
+  // Never render a malformed step: bail with recovery guidance instead of
+  // throwing halfway through and leaving a stuck run.
+  if (!step || typeof step !== 'object' || typeof step.stage !== 'string') {
+    listenEl.textContent = 'Something went wrong — press Start to begin again.';
+    return;
+  }
   pendingRef = step.pendingCapture ?? null;
   stageEl.textContent = step.stage;
   setSpoken(step.text, step.stage === 'decided');
@@ -1395,8 +1414,8 @@ async function drive(step) {
     await pause(900);
     try {
       return drive(await post('/api/session/' + sessionId + '/signal', { event: READING_SIGNAL[step.stage] }));
-    } catch {
-      listenEl.textContent = 'Could not reach the server.';
+    } catch (err) {
+      listenEl.textContent = postError(err);
       return;
     }
   }
@@ -1481,9 +1500,9 @@ async function respond(utterance) {
   let step;
   try {
     step = await post('/api/session/' + sessionId + '/say', { utterance });
-  } catch {
+  } catch (err) {
     busy = false;
-    listenEl.textContent = 'Could not reach the server.';
+    listenEl.textContent = postError(err);
     return;
   }
   busy = false;
