@@ -101,7 +101,7 @@ System font stacks throughout (no webfont dependency — the demo must run offli
 
 ## Layout & Spacing
 
-4-based scale (4–48px). One-column reading surface, max width 56rem, 24px page margins on mobile. The Assistant surface stacks: orb + spoken line (top, sticky), generated panel (middle), transcript (scrolling history below). The Capture surface is full-bleed camera with the frame overlay and a bottom coach card; the spoken line docks above the coach card so guidance and viewfinder share one glance.
+4-based scale (4–48px). One-column reading surface, max width 56rem, 24px page margins on mobile. The Assistant surface stacks: orb + spoken line (top, sticky), generated panel (middle), transcript (scrolling history below). The Capture surface is full-bleed camera with the frame overlay and a bottom coach card; the spoken line docks above the coach card so guidance and viewfinder share one glance. On the single-page realization the capture frame **docks at the chat**: at capture start the frame node moves to the dock zone above the Listen/input row and the view follows it — the viewfinder meets the user where they are, never stranded at the page top while they chat at the bottom. It returns home when the stage closes.
 
 Panels the assistant generates slot into the middle region only — they never move the orb, the spoken line, or the capture frame. Generated content inherits page margins; camera overlays are the sole full-bleed exception.
 
@@ -117,7 +117,7 @@ Tonal layering, not shadows: base → raised → overlay. The coach card and gen
 
 - **Voice orb** — the assistant's face. Idle: faint ring. Listening/speaking: sky pulse synced to audio energy (static glow under reduced motion). Tap toggles mute; long-press reserved for system use.
 - **Spoken line** — current utterance in `{typography.spoken}`. Updates per Turn; the previous line collapses into the transcript. Never shows two live lines at once.
-- **Capture frame** — full-bleed camera with guide overlay: corner brackets for documents, oval for faces, rails for alignment. Guides render `{colors.frame-guide}`; on lock they flash `{colors.signal-ok}` once and hold. Haptic tick on lock where available.
+- **Capture frame** — full-bleed camera with guide overlay: corner brackets for documents, oval for faces, rails for alignment. Guides render `{colors.frame-guide}`; on lock they flash `{colors.signal-ok}` once and hold. Haptic tick on lock where available. Docked at the chat on capture start (see Layout & Spacing); docking animates opacity/position only — guides never re-lay-out mid-capture.
 - **Coach card** — one coaching instruction at a time (`surface-raised`, hairline border): short imperative + optional diagram slot. Replaces, never stacks — a new instruction retires the old.
 - **Generated panel** — assistant-assembled UI for the current Turn (field confirmations, retake options, progress). Middle region only; composed from primitives in `EXPERIENCE.md` Component Patterns. Must always include a text equivalent of any choice it presents.
 - **Transcript turn** — history rows: speaker label in `meta`, text in `body`. System turns carry a left edge tick; sky tick marks the most recent.
@@ -132,6 +132,7 @@ Tonal layering, not shadows: base → raised → overlay. The coach card and gen
 | Voice sky for aliveness only; verdict hues for verdicts only | Sky pass/fail badges, green/red voice states |
 | One coach card, replaced per instruction | Stacked coaching tips or persistent hint bars |
 | Generated panels in the middle region from approved primitives | Assistant-invented surfaces, nav, or chrome |
+| Frame docks at the chat on capture start | Frame stranded at page top while the user chats at the bottom |
 | Static glow + haptics under reduced motion | Pulsing orb, flashing frame, animated gradients |
 | Mono evidence type on Decision only | Mono body copy elsewhere |
 | Dark-first console, tonal layering | Light theme, drop-shadow hierarchy, decorative gradients |

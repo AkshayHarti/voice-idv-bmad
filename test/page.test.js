@@ -84,7 +84,10 @@ test("microphone failures name the remedy and retry next turn", async () => {
   assert.ok(html.includes("Speech service unreachable"), "network errors named, not counted as silence");
   assert.ok(html.includes("silentStreak >= 3"), "only sustained dead air parks");
   assert.ok(html.includes("voiceGen"), "retired generations cannot speak into new runs");
-  assert.ok(html.includes("retry next turn"), "retry policy stated in code");
+  assert.ok(!html.includes("listenGen"), "single generation counter, no duplicate");
+  assert.ok(html.includes("silenceParked"), "silence parks lift on typed proof of presence");
+  assert.ok(html.includes("START_RETRY_SUFFIX"), "parked remedies share one recovery tail");
+  assert.ok(html.includes("retries next turn"), "only network retries next turn");
   assert.ok(!html.includes("micBroken"), "permanent latch is gone");
 });
 
@@ -110,6 +113,27 @@ test("failure paths message instead of stalling silently", async () => {
   assert.ok(html.includes("err.status"), "thrown errors carry HTTP status");
   assert.ok(html.includes("err.status === 409"), "stale lock stays disabled");
   assert.ok(html.includes("Something went wrong"), "malformed steps bail with recovery");
+  assert.ok(html.includes("sampleDownUntil"), "dead server backs polling off");
+  assert.ok(html.includes('id="listen" aria-live="polite"'), "remedies announced to screen readers");
+});
+
+test("capture frame docks at the chat on capture start (placement C)", async () => {
+  const html = await getPage();
+  assert.ok(html.includes('id="dockZone"'), "dock zone above the input");
+  assert.ok(
+    html.indexOf('id="dockZone"') > html.indexOf('id="listen"'),
+    "dock lands below the chat line it answers"
+  );
+  assert.ok(
+    html.indexOf('id="dockZone"') < html.indexOf('id="typed"'),
+    "dock lands above the typed input"
+  );
+  assert.ok(html.includes("function dockFrame"), "docking routine exists");
+  assert.ok(html.includes("dockZone.appendChild(captureWrap)"), "frame node moves to the dock");
+  assert.ok(html.includes("captureWrap.scrollIntoView"), "view follows the frame");
+  assert.ok(html.includes("frameHome.insertBefore"), "frame returns home at stage close");
+  assert.ok(html.includes("REDUCED_MOTION ? 'auto' : 'smooth'"), "docking honors reduced motion");
+  assert.ok(html.includes("dockFrame(on)"), "show/hide drives the dock");
 });
 
 test("telemetry stays numeric; v1 zero-heuristics are disclosed", async () => {

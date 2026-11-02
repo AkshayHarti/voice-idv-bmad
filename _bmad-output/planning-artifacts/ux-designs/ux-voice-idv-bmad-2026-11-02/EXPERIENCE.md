@@ -21,7 +21,7 @@ Mobile-first responsive web (WebRTC camera + Web Speech). No UI system named —
 | Surface | Reached from | Purpose |
 |---|---|---|
 | Assistant | App open (cold) | Conversation home: orb, spoken line, generated panel, transcript |
-| Capture | Assistant (per capture stage) | Full-bleed camera: doc front/back, challenge, selfie |
+| Capture | Assistant (per capture stage) | Camera + guides — doc front/back, challenge, selfie — with the frame docked above the input at capture start (placement C), so the viewfinder meets the user at the chat |
 | Decision | Capture (run complete) | Verdict, evidence, limitations, Attack Surface panel |
 | Consent | Assistant (run start, sheet) | Purpose + capture disclosure + spoken consent |
 
@@ -51,7 +51,7 @@ Behavioral. Visual specs live in `DESIGN.md` Components.
 |---|---|---|
 | Voice orb | Assistant, Capture | Pulse follows audio energy; tap toggles mute; state always mirrored in text (Listening… / Speaking… / Muted). |
 | Spoken line | Assistant, Capture | Exactly one live line; updates per Turn; prior line collapses to transcript. Never edited in place mid-utterance. |
-| Capture frame | Capture | Guides per capture kind (brackets/oval/rails); lock flashes ok once + haptic; unlock returns to guide state silently. |
+| Capture frame | Capture | Guides per capture kind (brackets/oval/rails); lock flashes ok once + haptic; unlock returns to guide state silently. Docking: at capture start the frame node moves to the dock zone above the input/Listen row and scrolls into view; it returns home when the stage closes. |
 | Coach card | Capture | One instruction at a time; new instruction replaces old; pairs with spoken twin; [ASSUMPTION] optional diagram slot renders only when telemetry names a spatial fix (tilt, thumb, corners). |
 | Generated panel | Assistant | Assembled per Turn from primitives (confirm row, choice list, progress steps, evidence peek); every choice has a text equivalent; panel retires when the Turn closes. |
 | Transcript turn | Assistant | Append-only mirror; barge-in marks the interrupted line; consent + decision turns pinned with a marker. |
@@ -98,7 +98,7 @@ Behavioral. Visual contrast lives in `DESIGN.md`.
 ### Flow 1 — Clean pass (Sienna, grad student in Melbourne, verifying for a rental application)
 
 1. Sienna opens the app; the assistant speaks the consent prompt and shows the consent gate.
-2. She says "I consent"; the Capture surface opens on the document-front stage with corner-bracket guides.
+2. She says "I consent"; the capture frame docks above the input on the document-front stage with corner-bracket guides — no scrolling back to find it.
 3. She holds up her licence; telemetry sees glare on the hologram — coach card + voice: "Tilt the top slightly away from the light — better, hold there."
 4. Frame locks (flash + tick + "Good framing — captured front"); back, challenge, and selfie stages follow the same coach→lock rhythm.
 5. Assistant narrates comparing ("Checking your details now…"); the Decision surface renders.
@@ -161,7 +161,7 @@ Product-specific: who speaks when while the camera is live.
 
 | Breakpoint | Behavior |
 |---|---|
-| Mobile portrait (primary) | Full experience: Assistant + Capture + Decision; camera full-bleed; coach card bottom-docked. |
+| Mobile portrait (primary) | Full experience: Assistant + Capture + Decision; capture frame docked above the input at capture start; coach card paired with it. |
 | Mobile landscape | Capture guides compress to safe area; spoken line docks top; coach card side-docks. [ASSUMPTION] |
 | Tablet / desktop (observer) | Same run, wider reading surface (56rem max); transcript beside panels; camera via device cam or fixture stand-in for demo. |
 

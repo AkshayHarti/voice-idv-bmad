@@ -683,6 +683,8 @@ const PAGE = `<!doctype html>
             color:#EDEFF4; min-height:1.3em; }
   #captureWrap { margin:1rem 0; }
   #captureWrap[hidden] { display:none; }
+  #dockZone { margin:1rem 0; }
+  #dockZone:empty { display:none; }
   #captureFrame { position:relative; border-radius:16px; overflow:hidden;
                   background:#000; aspect-ratio:4/3; max-height:60vh; }
   #viewfinder { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
@@ -773,7 +775,8 @@ const PAGE = `<!doctype html>
 </div>
 
 <div id="transcript" aria-live="polite"></div>
-<div id="listen"></div>
+<div id="listen" aria-live="polite"></div>
+<div id="dockZone"></div>
 
 <form id="typed">
   <input id="utterance" autocomplete="off" placeholder="Or type what you would say" aria-label="Typed input">
@@ -795,6 +798,9 @@ const orbEl = $('orb'), spokenEl = $('spoken'), panelEl = $('panel');
 const captureWrap = $('captureWrap'), captureFrame = $('captureFrame');
 const videoEl = $('viewfinder'), guidesEl = $('guides'), coachEl = $('coach');
 const captureMeta = $('captureMeta'), lockBtn = $('lockBtn'), standinBtn = $('standinBtn');
+const dockZone = $('dockZone');
+const frameHome = captureWrap.parentNode, frameHomeNext = captureWrap.nextSibling;
+const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const CAPTURE_SIGNAL = {
   awaiting_doc_front: 'front_captured',
@@ -819,14 +825,18 @@ let sessionId = null;
 let busy = false;
 let micParked = null;
 let silentStreak = 0;
+// Shared recovery tail for all three parked-mic remedies.
+const START_RETRY_SUFFIX = ', then press Start to try voice again.';
 let activeRecognition = null;
 let voiceGen = 0;
+let silenceParked = false;
 let pendingRef = null;
 let captureStream = null;
 let captureStage = null;
 let sampling = false;
 let sampleInflight = false;
 let sampleFails = 0;
+let sampleDownUntil = 0;
 let sampleTimer = null;
 let lockBusy = false;
 
@@ -1161,8 +1171,24 @@ async function doRetake() {
     listenEl.textContent = postError(err);
   }
 }
+/**
+ * Placement C: at capture start the frame node docks above the input so
+ * the viewfinder meets the user at the chat; it returns home when the
+ * stage closes. Moving the live <video> within the document keeps playing.
+ */
+function dockFrame(on) {
+  if (on) {
+    dockZone.appendChild(captureWrap);
+    try {
+      captureWrap.scrollIntoView({ block: 'nearest', behavior: REDUCED_MOTION ? 'auto' : 'smooth' });
+    } catch { /* older browsers: the dock still lands */ }
+  } else if (captureWrap.parentNode === dockZone) {
+    frameHome.insertBefore(captureWrap, frameHomeNext);
+  }
+}
 function showCapture(on, stage) {
   captureWrap.hidden = !on;
+  dockFrame(on);
   if (on && stage && CAPTURE_LABEL[stage]) {
     captureWrap.setAttribute('aria-label', CAPTURE_LABEL[stage]);
     captureMeta.textContent = 'capturing…';
@@ -1383,6 +1409,8 @@ async function sampleTick() {
   if (!(sampling === true)) return;
   if (sampleInflight === true) return;
   if (captureStream === null || videoEl.readyState < 2) return;
+  // Back off while the server is down: one probe ~2s instead of 5Hz hammering.
+  if (sampleFails >= 10 && Date.now() < sampleDownUntil) return;
   sampleInflight = true;
   const tickSession = sessionId;
   const tickStage = captureStage;
@@ -1402,9 +1430,13 @@ async function sampleTick() {
       await speak(res.narration.text);
     }
   } catch {
-    // A blip stays silent; a dead server says so after ~2s of failures.
+    // A blip stays silent; a dead server says so after ~2s of failures,
+    // then backs off to one probe per ~2s until it recovers.
     sampleFails += 1;
-    if (sampleFails >= 10) setCoach('Connection lost — retrying…');
+    if (sampleFails >= 10) {
+      setCoach('Connection lost — retrying…');
+      sampleDownUntil = Date.now() + 2000;
+    }
   }
   finally { sampleInflight = false; }
 }
@@ -1460,9 +1492,15 @@ function listen() {
       : 'Type your answer, then press Send.';
     return;
   }
-  // Never stack recognizers: an in-flight one owns the turn and its result
-  // drives onward. Starting a second would throw straight into a dead mic.
-  if (activeRecognition) return;
+  // A re-entrant call means the turn moved on (a typed answer raced live
+  // voice): retire the stale recognizer so its late result can't double-feed
+  // a second turn, then listen fresh for the current one.
+  voiceGen += 1;
+  const gen = voiceGen;
+  if (activeRecognition) {
+    try { activeRecognition.abort(); } catch { /* already gone */ }
+    activeRecognition = null;
+  }
 
   const recognition = new SR();
   recognition.lang = 'en-AU';
@@ -1471,7 +1509,6 @@ function listen() {
   recognition.maxAlternatives = 1;
 
   let settled = false;
-  const gen = voiceGen;
   listenEl.textContent = 'Listening...';
   setOrb('listening');
   activeRecognition = recognition;
@@ -1487,8 +1524,9 @@ function listen() {
     return true;
   };
 
-  // Only dead air parks the mic: permission, device, and network errors name
-  // their remedy and retry next turn, self-healing if fixed meanwhile.
+  // Parking policy: silence, denial, and a missing mic park with a named
+  // remedy (typed input carries the turn); only network blips retry next
+  // turn, since time alone heals them.
   const settle = (text) => {
     if (!abandon()) return;
     listenEl.textContent = '';
@@ -1497,7 +1535,8 @@ function listen() {
       // Three fully silent windows is dead air, not a quiet user: park with
       // a remedy instead of spinning spoken re-asks forever.
       if (silentStreak >= 3) {
-        micParked = "I can't hear anything — check your microphone, then press Start to try voice again.";
+        micParked = "I can't hear anything — check your microphone" + START_RETRY_SUFFIX;
+        silenceParked = true;
         listen();
         return;
       }
@@ -1515,15 +1554,21 @@ function listen() {
 
   recognition.onresult = (event) => settle(event.results[0][0].transcript.trim());
   recognition.onerror = (event) => {
-    // Named remedies retry next turn — never latch, typed always available.
+    // Recovery needs user action outside the page, so these park until
+    // Start; only the network branch below retries next turn. (Evidence, not
+    // fear: Chrome and Safari remember denial instead of re-prompting, so a
+    // retry loop would be safe — parking is simply calmer, and Start is cheap
+    // this early in a run.)
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
       if (!abandon()) return;
-      listenEl.textContent = "Microphone is blocked — allow it in your browser's site settings, then type your answer.";
+      micParked = "Microphone is blocked — allow it in your browser's site settings" + START_RETRY_SUFFIX;
+      listen();
       return;
     }
     if (event.error === 'audio-capture') {
       if (!abandon()) return;
-      listenEl.textContent = 'No microphone found on this device. Type your answer instead.';
+      micParked = 'No microphone found — connect one' + START_RETRY_SUFFIX;
+      listen();
       return;
     }
     if (event.error === 'network') {
@@ -1543,16 +1588,18 @@ async function respond(utterance) {
   busy = true;
   inputEl.value = '';
 
-  let step;
   try {
-    step = await post('/api/session/' + sessionId + '/say', { utterance });
+    const step = await post('/api/session/' + sessionId + '/say', { utterance });
+    busy = false;
+    try {
+      await drive(step);
+    } catch {
+      listenEl.textContent = 'Something went wrong — press Start to begin again.';
+    }
   } catch (err) {
     busy = false;
     listenEl.textContent = postError(err);
-    return;
   }
-  busy = false;
-  await drive(step);
 }
 
 startBtn.addEventListener('click', async () => {
@@ -1568,6 +1615,7 @@ startBtn.addEventListener('click', async () => {
     activeRecognition = null;
   }
   micParked = null;
+  silenceParked = false;
   silentStreak = 0;
   stopCapture();
   transcriptEl.replaceChildren();
@@ -1589,9 +1637,14 @@ startBtn.addEventListener('click', async () => {
 $('typed').addEventListener('submit', (event) => {
   event.preventDefault();
   const value = inputEl.value.trim();
-  // Typed success breaks a silence streak: only consecutive dead air parks.
+  // Typed success breaks a silence streak — and typing proves presence, so
+  // it unparks a silence park (denial/device parks still need Start).
   if (value) {
     silentStreak = 0;
+    if (silenceParked) {
+      silenceParked = false;
+      micParked = null;
+    }
     respond(value);
   }
 });
