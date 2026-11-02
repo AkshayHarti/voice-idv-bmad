@@ -63,7 +63,7 @@ export { coach };
 
 const CONSENT_TURN: Turn = {
   kind: "consent",
-  text: "I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.",
+  text: "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.",
 };
 
 function instructTurn(fixtureId: string, which: "front" | "back"): Turn {

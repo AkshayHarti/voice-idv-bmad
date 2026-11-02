@@ -345,7 +345,7 @@ const PAGE = `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AU Voice IDV — demo slice</title>
+<title>Aria — AU Voice IDV demo</title>
 <style>
   :root { color-scheme: dark; --ok:#4ade80; --bad:#f87171; --meh:#fbbf24; --dim:#8b93a1;
           --line:#1b2230; --panel:#11161e; }
@@ -367,6 +367,7 @@ const PAGE = `<!doctype html>
   .turn.you { border-left-color:#3f6fbf; background:#0d1420; }
   .turn.warn { border-left-color:#a2601f; }
   .turn .who { font-size:.66rem; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); }
+  .turn:not(.you) .who { text-transform:none; }
   .turn .what { margin-top:.15rem; }
   #listen { font-size:.8rem; color:#9fc3ff; min-height:1.2em; }
   #decision { font-size:1.9rem; font-weight:650; letter-spacing:-.02em; margin:1.5rem 0 .2rem; }
@@ -389,8 +390,8 @@ const PAGE = `<!doctype html>
   #tiermsg { font-size:1rem; margin:.4rem 0; }
 </style>
 
-<h1>AU Voice IDV — demo slice</h1>
-<p class="sub">Voice-guided capture. Deterministic checks decide; voice narrates, never decides.</p>
+<h1>Aria — AU Voice IDV demo</h1>
+<p class="sub">Voice-guided capture with Aria. Deterministic checks decide; voice narrates, never decides.</p>
 
 <div class="row" id="fixtures" role="group" aria-label="Choose a fixture"></div>
 <div class="row">
@@ -466,7 +467,7 @@ function renderTranscript(lines) {
     wrap.className = 'turn' + (line.who === 'you' ? ' you' : line.kind === 'warn' ? ' warn' : '');
     const label = document.createElement('div');
     label.className = 'who';
-    label.textContent = line.who === 'you' ? 'you' : 'system';
+    label.textContent = line.who === 'system' ? 'Aria' : 'you';
     const body = document.createElement('div');
     body.className = 'what';
     body.textContent = line.text;             // textContent only: never innerHTML

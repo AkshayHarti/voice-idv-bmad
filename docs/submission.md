@@ -1,4 +1,4 @@
-# Voice-First IDV — Cerebral Valley submission (indie track)
+# Aria — Voice-First IDV — Cerebral Valley submission (indie track)
 
 ## The problem
 
@@ -6,7 +6,7 @@ Every KYC flow assumes you can read a screen, find a button, and line up a
 document inside a box. Blind and low-vision people are excluded from all of
 them — and the exclusion is invisible, because the flow looks fine to
 everyone else. This demo does the same verification work with the visual
-channel removed: instructions spoken, document read by the system, result
+channel removed: instructions spoken, document read by Aria, result
 spoken back, with a transcript on screen only for sighted observers.
 
 ## What Meta tooling does here (beyond basic)
