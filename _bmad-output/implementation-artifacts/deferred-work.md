@@ -58,3 +58,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-doc-ocr.md`
   summary: Add global rate limiting (per-IP/per-key lock and session-mint caps) at deployment; per-stage OCR attempt caps only bound single sessions.
   evidence: party elicitation confirmed open session mint + per-session-only caps still allow multi-session spend loops once hosted publicly.
+- source_spec: `_bmad-output/implementation-artifacts/spec-doc-ocr.md`
+  summary: Parallelize OCR + narration on the lock path (or skip narration for fixed lock text) to cut the 16s serial worst case; client timeout + progress UI already bound the symptom.
+  evidence: party elicitation traced 8s OCR + 8s narration serially; threading pre-warmed narration through shared stepBody is structural.

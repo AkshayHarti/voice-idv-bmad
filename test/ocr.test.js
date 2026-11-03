@@ -339,6 +339,9 @@ test("client posts the locked crop on doc stages only, capped", async () => {
   assert.ok(page.includes("url.length > CROP_MAX_CHARS"), "over-cap grabs dropped");
   assert.ok(page.includes("takeSnapshot"), "confirm-card snapshot path untouched");
   assert.ok(page.includes("sayBody.crop = voiceCrop"), "voice lock-now attaches the crop");
+  assert.ok(page.includes("Locking — reading document…"), "lock shows progress, never a dead button");
+  assert.ok(page.includes("LOCK_TIMEOUT_MS"), "keyed locks bound the wait");
+  assert.ok(page.includes("Still working — tap Lock to collect."), "timeout recovers via idempotent re-tap");
 });
 
 test("passport doc locks never OCR: photo pages are not licences", async () => {

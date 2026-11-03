@@ -1859,11 +1859,12 @@ function speak(text) {
   });
 }
 
-async function post(path, body) {
+async function post(path, body, signal) {
   const res = await fetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
   });
   if (!res.ok) {
     const err = new Error(path + ' -> ' + res.status);
@@ -2290,17 +2291,25 @@ standinBtn.addEventListener('click', async () => {
   }
 });
 
+// Keyed locks serialize OCR + narration (8s + 8s worst case): past this the
+// client stops waiting and lets a re-tap collect the same lock (the hold is
+// idempotent, so the retry can never double-fire).
+const LOCK_TIMEOUT_MS = 25000;
 async function doLock() {
   if (lockBusy || !sessionId) return;
   armGen += 1;   // retire pre-lock arming ticks: no spurious beat + haptic
   lockBusy = true;
   lockBtn.disabled = true;
+  listenEl.textContent = 'Locking — reading document…';
   const lockSession = sessionId;
+  const lockAbort = new AbortController();
+  const lockTimer = setTimeout(() => lockAbort.abort(), LOCK_TIMEOUT_MS);
   try {
     const docStage = captureStage === 'awaiting_doc_front' || captureStage === 'awaiting_doc_back';
     const crop = docStage ? takeCrop() : null;
-    const res = await post('/api/session/' + sessionId + '/lock', crop ? { crop } : {});
+    const res = await post('/api/session/' + sessionId + '/lock', crop ? { crop } : {}, lockAbort.signal);
     if (sessionId !== lockSession) return;   // restart won the race: drop it
+    listenEl.textContent = '';
     await onLocked(res, lockSession);
   } catch (err) {
     // A failed lock always disarms (a later clean run re-arms); the stage
@@ -2311,11 +2320,15 @@ async function doLock() {
     // path back. Other failures re-enable for a retry.
     if (err && (err.status === 409 || err.status === 404)) {
       lockBtn.disabled = true;
+    } else if (err && err.name === 'AbortError') {
+      lockBtn.disabled = pendingRef !== null;
+      listenEl.textContent = 'Still working — tap Lock to collect.';
     } else {
       lockBtn.disabled = pendingRef !== null;
       listenEl.textContent = postError(err);
     }
   } finally {
+    clearTimeout(lockTimer);
     lockBusy = false;
   }
 }
