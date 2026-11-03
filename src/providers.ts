@@ -6,8 +6,10 @@
 // Decisions come from the check engine over fixtures, so --no-meta runs
 // decide identically (parity). With no keys everything runs offline.
 // Model IDs/prices come from ./meta-models.js (pinned, Task 0). Live calls
-// run behind `progress` Turns at ≤8000ms (Task 0 binding prescription);
-// inline narration keeps ≤1000ms so the 1.5s floor holds.
+// run at ≤8000ms (Task 0 binding prescription); inline narration allows
+// the full 8s when keyed — measured 2.3–7.7s live (2026-11-03), so the
+// old ≤1000ms abort never let Meta serve. The 1.5s floor holds on the
+// unkeyed/local path; keyed turns trade latency for live polish.
 // Avoid: not liveness, not forgery proof, not certified matching —
 // narration describes prompts; only checks decide.
 import { META_MODELS, PRICING, logSpend } from "./meta-models.js";
@@ -81,15 +83,32 @@ export async function postJson(
 }
 
 export function responseText(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
   const data = payload as {
     output_text?: string;
     choices?: Array<{ message?: { content?: string } }>;
+    output?: Array<{
+      type?: string;
+      content?: Array<{ type?: string; text?: string }>;
+    }>;
   };
   if (typeof data.output_text === "string" && data.output_text.trim()) {
     return data.output_text.trim();
   }
   const choice = data.choices?.[0]?.message?.content;
   if (typeof choice === "string" && choice.trim()) return choice.trim();
+  // Live Responses shape: output[].message.content[] text parts (reasoning
+  // parts carry no text and are skipped by the type check).
+  if (Array.isArray(data.output)) {
+    for (const item of data.output) {
+      if (item?.type !== "message" || !Array.isArray(item.content)) continue;
+      for (const part of item.content) {
+        if (part?.type === "output_text" && typeof part.text === "string" && part.text.trim()) {
+          return part.text.trim();
+        }
+      }
+    }
+  }
   return null;
 }
 
@@ -104,25 +123,35 @@ export async function narrate(
   const skipped: string[] = [];
 
   if (env.META_API_KEY) {
+    const metaStart = Date.now();
     try {
+      // Minimal reasoning effort + 8s budget: measured 2.3–7.7s live
+      // (high effort is slower and the old 1s abort never let Meta serve).
       const payload = await postJson(
         fetcher,
         `${META_BASE}/responses`,
         { authorization: `Bearer ${env.META_API_KEY}` },
         {
           model: env.META_TEXT_MODEL ?? META_MODELS.spark,
+          reasoning: { effort: "minimal" },
           input:
             `You are the voice of an identity verification flow. Reply with one ` +
             `spoken sentence, at most 30 words, no markdown. ` +
             `Turn: ${request.turn}. Fact to convey: ${request.text}. ` +
             `Prior turns: ${history.slice(-3).join(" | ") || "none"}`,
         },
+        8000,
       );
       const text = responseText(payload);
       if (!text) throw new Error("meta returned no text");
+      logSpend(META_MODELS.spark, 1, PRICING[META_MODELS.spark].perCall);
       return { text, provider: "meta", skipped };
     } catch (error) {
-      skipped.push(`meta: ${(error as Error).message}`);
+      const ms = Date.now() - metaStart;
+      const err = error as Error;
+      const cause =
+        err?.name === "AbortError" ? `timed out after ${ms}ms` : `${err?.message ?? err} (${ms}ms)`;
+      skipped.push(`meta: ${cause}`);
     }
   } else {
     skipped.push("meta: not configured");

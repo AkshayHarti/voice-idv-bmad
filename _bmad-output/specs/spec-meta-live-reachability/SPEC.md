@@ -24,7 +24,7 @@ Pain to kill: every Meta call falls back to local even with a valid key — the 
 ## Constraints
 
 - Fallback chains and never-throw behavior unchanged; local templates still serve when Meta is slow or down.
-- No timeout raised without a measured latency basis; the voice-turn latency budget stays intact.
+- Narration timeout is 8s on measured basis (minimal-effort 2.3/2.5/7.7s live, 2026-11-03; low-effort 5.8s); keyed turns trade latency for live polish, the 1.5s floor holds only on the unkeyed path.
 - No live Meta calls in the test suite; live verification is a manual keyed probe.
 
 ## Non-goals
@@ -36,6 +36,3 @@ Pain to kill: every Meta call falls back to local even with a valid key — the 
 
 - A live-keyed narration call returns `provider: meta` with the spoken sentence — or the skip reason names the exact measured cause (latency vs shape vs auth).
 
-## Open Questions
-
-- Does the API accept a low reasoning-effort parameter, and what latency does it yield? (Settled by the keyed probe during build.)

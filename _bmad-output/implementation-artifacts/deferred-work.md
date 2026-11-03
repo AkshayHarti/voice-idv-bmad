@@ -31,3 +31,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-customer-view.md`
   summary: Keep check evidence out of end-user API payloads, not just rendered HTML (step JSON still carries the full report; /api/run/:id serves fixture reports openly).
   evidence: verification found the audience split is render-level per spec; true payload-hardening changes pinned API shapes and needs a spec-level decision.
+- source_spec: `_bmad-output/implementation-artifacts/spec-meta-live-reachability.md`
+  summary: Concatenate multi-part Responses text instead of first-part-only when an observed multi-part payload defines join semantics.
+  evidence: review found responseText returns the first output_text part; all observed payloads carry one part.
+- source_spec: `_bmad-output/implementation-artifacts/spec-meta-live-reachability.md`
+  summary: Handle OpenAI-style array-of-parts choices content when an observed OpenRouter array payload exists.
+  evidence: review found content typed string-only (pre-existing, safe-direction local fallback).
+- source_spec: `_bmad-output/implementation-artifacts/spec-meta-live-reachability.md`
+  summary: Design a custom-model escape hatch for the unconditional reasoning param if a META_TEXT_MODEL target rejects it.
+  evidence: review found no env override; retry is a spec non-goal and no rejecting model is known.
