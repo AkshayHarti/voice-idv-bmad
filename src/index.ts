@@ -594,7 +594,7 @@ async function stepBody(
     transcript: session.transcript,
     captures: session.captures,
     capturesPurged: session.flow.capturesPurged,
-    report: reportFor(session),
+    report: reportFor(session, { includeOcr: false }),
     panel: turn?.panel ?? generatePanel(kind, session.flow.stage, { text }),
     pendingCapture: session.pendingCapture,
   };
@@ -617,11 +617,15 @@ app.post("/api/session", async (c) => {
   return c.json(await stepBody(session, id, null, true));
 });
 
-function reportFor(session: Session): Report | null {
+function reportFor(session: Session, opts: { includeOcr: boolean }): Report | null {
   if (session.flow.stage !== "decided") return null;
   const report = evaluateFixture(session.fixture);
-  const ocr = ocrDetailsFor(session);
-  if (ocr) report.ocr = ocr;
+  // OCR details ride only the token-gated twins — never the end-user feed,
+  // which stays verdict-only on the wire as well as on the glass.
+  if (opts.includeOcr) {
+    const ocr = ocrDetailsFor(session);
+    if (ocr) report.ocr = ocr;
+  }
   return report;
 }
 
@@ -1272,7 +1276,7 @@ const NO_STORE_NO_INDEX = {
 app.get("/result/:token", async (c) => {
   const resolved = resolveResultToken(c.req.param("token"));
   if (!resolved) return c.html(resultMissingPage(), 404, NO_STORE_NO_INDEX);
-  const report = reportFor(resolved.session);
+  const report = reportFor(resolved.session, { includeOcr: true });
   if (!report) {
     return c.html(resultPendingPage(resolved.session), 200, NO_STORE_NO_INDEX);
   }
@@ -1286,7 +1290,7 @@ app.get("/result/:token", async (c) => {
 app.get("/api/result/:token", (c) => {
   const resolved = resolveResultToken(c.req.param("token"));
   if (!resolved) return c.json({ error: "unknown_result" }, 404, NO_STORE_NO_INDEX);
-  const report = reportFor(resolved.session);
+  const report = reportFor(resolved.session, { includeOcr: true });
   if (!report) {
     return c.json({ status: "pending", stage: resolved.session.flow.stage }, 200, NO_STORE_NO_INDEX);
   }

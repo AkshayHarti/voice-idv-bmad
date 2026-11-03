@@ -204,7 +204,11 @@ test("customer view: gated JSON serves the same report (no second path)", async 
 
   const response = await app.request(apiPath);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), decided.report);
+  // Same builder, one deliberate difference: the gated twin additionally
+  // carries the OCR section the verdict-only session feed omits.
+  const { ocr, ...rest } = await response.json();
+  assert.deepEqual(rest, decided.report);
+  assert.ok(ocr, "twin carries the gated OCR section");
 });
 
 test("wrong token: nothing run-specific renders, no report keys leak", async () => {

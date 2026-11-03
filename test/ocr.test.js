@@ -23,6 +23,13 @@ async function getPage(path) {
   return response.text();
 }
 
+/** OCR details live on the token-gated JSON twin — never the session feed. */
+async function getTwinOcr(customerLink) {
+  const twin = await app.request(customerLink.replace("/result/", "/api/result/"));
+  assert.equal(twin.status, 200);
+  return (await twin.json()).ocr;
+}
+
 const AUTO_SIGNAL = {
   awaiting_doc_front: "front_captured",
   reading_front: "frames_done",
@@ -178,14 +185,12 @@ test("HAPPY OCR: locked crops render redacted on the customer twins", async () =
       assert.ok(!html.includes(raw), `customer HTML leaks ${raw}`);
     }
 
-    const twin = await app.request(step.body.customerLink.replace("/result/", "/api/result/"));
-    assert.equal(twin.status, 200);
-    const twinJson = await twin.json();
-    assert.deepEqual(twinJson.ocr, step.body.report.ocr, "twins serve the same object");
-    assert.equal(twinJson.ocr.front.source, "ocr");
-    assert.equal(twinJson.ocr.front.values.licence_number, "••••67");
-    assert.equal(twinJson.ocr.back.values.card_number, "••••77");
-    assert.ok(!JSON.stringify(twinJson).includes("CROPMARKERHAPPY"), "crop bytes dropped");
+    assert.ok(!("ocr" in step.body.report), "session feed stays verdict-only");
+    const ocr = await getTwinOcr(step.body.customerLink);
+    assert.equal(ocr.front.source, "ocr");
+    assert.equal(ocr.front.values.licence_number, "••••67");
+    assert.equal(ocr.back.values.card_number, "••••77");
+    assert.ok(!JSON.stringify(ocr).includes("CROPMARKERHAPPY"), "crop bytes dropped");
   });
 });
 
@@ -269,7 +274,7 @@ test("retake drops pending fields; deny purges kept fields", async () => {
       const event = AUTO_SIGNAL[step.body.stage];
       step = await post(`/api/session/${rid}/signal`, { event });
     }
-    assert.equal(step.body.report.ocr.front.source, "fixture-fallback");
+    assert.equal((await getTwinOcr(step.body.customerLink)).front.source, "fixture-fallback");
 
     // Deny: kept reads purge with the captures; the restarted run falls back.
     const did = (await post("/api/session", { fixtureId: "nsw-dl-clean" })).body.sessionId;
@@ -284,8 +289,9 @@ test("retake drops pending fields; deny purges kept fields", async () => {
       const event = AUTO_SIGNAL[again.body.stage];
       again = await post(`/api/session/${did}/signal`, { event });
     }
-    assert.equal(again.body.report.ocr.front.source, "fixture-fallback");
-    assert.equal(again.body.report.ocr.front.values.licence_number, "••••78");
+    // The denied token stays dead after restart: purged views never resurrect.
+    const dead = await app.request(again.body.customerLink.replace("/result/", "/api/result/"));
+    assert.equal(dead.status, 404);
   });
 });
 
@@ -368,7 +374,7 @@ test("partial OCR reads render unread, trimmed, and capped on both twins", async
       const event = AUTO_SIGNAL[step.body.stage];
       step = await post(`/api/session/${id}/signal`, { event });
     }
-    const front = step.body.report.ocr.front;
+    const front = (await getTwinOcr(step.body.customerLink)).front;
     assert.equal(front.source, "ocr");
     assert.equal(front.values.licence_number, "••••X9");
     assert.equal(front.values.full_name.length, 200);
@@ -398,8 +404,9 @@ test("mixed runs label each side: ocr where read, fixture where not", async () =
       const event = AUTO_SIGNAL[step.body.stage];
       step = await post(`/api/session/${id}/signal`, { event });
     }
-    assert.equal(step.body.report.ocr.front.source, "ocr");
-    assert.equal(step.body.report.ocr.back.source, "fixture-fallback");
+    const mixed = await getTwinOcr(step.body.customerLink);
+    assert.equal(mixed.front.source, "ocr");
+    assert.equal(mixed.back.source, "fixture-fallback");
     const html = await getPage(step.body.customerLink);
     assert.ok(html.includes("front · ocr"), "read side labeled ocr");
     assert.ok(html.includes("back · fixture fallback"), "unread side labeled fallback");
@@ -421,7 +428,7 @@ test("short non-image crops lock cleanly and fall back with zero Wonder calls", 
       const event = AUTO_SIGNAL[step.body.stage];
       step = await post(`/api/session/${id}/signal`, { event });
     }
-    assert.equal(step.body.report.ocr.front.source, "fixture-fallback");
+    assert.equal((await getTwinOcr(step.body.customerLink)).front.source, "fixture-fallback");
   }, { seen });
   assert.ok(!seen.includes(META_MODELS.wonder), "non-image crops never reach OCR");
 });
@@ -444,7 +451,7 @@ test("voice 'lock now' OCRs the locked frame like a tap", async () => {
       const event = AUTO_SIGNAL[step.body.stage];
       step = await post(`/api/session/${id}/signal`, { event });
     }
-    assert.equal(step.body.report.ocr.front.source, "ocr");
+    assert.equal((await getTwinOcr(step.body.customerLink)).front.source, "ocr");
   }, { seen });
   assert.ok(seen.includes(META_MODELS.wonder), "voice lock reaches Wonder");
 });
@@ -466,7 +473,7 @@ test("action-form locks carry the crop to OCR", async () => {
       const event = AUTO_SIGNAL[step.body.stage];
       step = await post(`/api/session/${id}/signal`, { event });
     }
-    assert.equal(step.body.report.ocr.front.source, "ocr");
+    assert.equal((await getTwinOcr(step.body.customerLink)).front.source, "ocr");
   });
 });
 
@@ -491,9 +498,8 @@ test("OCR values render HTML-escaped; the JSON twin keeps raw text", async () =>
     assert.ok(html.includes("&lt;img"), "angle brackets escaped");
     assert.ok(html.includes("a&amp;b"), "ampersand escaped");
     assert.ok(!html.includes("<img src=x>"), "no raw markup renders");
-    const twin = await app.request(step.body.customerLink.replace("/result/", "/api/result/"));
-    const twinJson = await twin.json();
-    assert.equal(twinJson.ocr.front.values.full_name, "<img src=x>", "twin keeps raw data");
+    const twinOcr = await getTwinOcr(step.body.customerLink);
+    assert.equal(twinOcr.front.values.full_name, "<img src=x>", "twin keeps raw data");
   }, {
     wonderImpl: async () => ({ ok: true, json: async () => ({ output_text: evil }) }),
   });
@@ -518,7 +524,8 @@ test("deny during the OCR await abandons the lock; nothing resurrects", async ()
     const abandoned = await lockP;
     assert.equal(abandoned.body.stage, "idle", "stale lock abandoned, not landed");
     assert.equal(abandoned.body.pendingCapture, null);
-    // The stale resolve resurrects nothing: a fresh lock starts clean.
+    // The stale resolve resurrects nothing: the denied token stays dead and
+    // the fresh run decides cleanly with no servable OCR view.
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
     await post(`/api/session/${id}/lock`, {});
     await post(`/api/session/${id}/keep`, {});
@@ -527,7 +534,9 @@ test("deny during the OCR await abandons the lock; nothing resurrects", async ()
       const event = AUTO_SIGNAL[step.body.stage];
       step = await post(`/api/session/${id}/signal`, { event });
     }
-    assert.equal(step.body.report.ocr.front.source, "fixture-fallback");
+    assert.equal(step.body.stage, "decided");
+    const dead = await app.request(step.body.customerLink.replace("/result/", "/api/result/"));
+    assert.equal(dead.status, 404);
   }, {
     wonderImpl: async (url, opts, body) => {
       entered = true;
