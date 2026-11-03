@@ -505,6 +505,40 @@ test("OCR values render HTML-escaped; the JSON twin keeps raw text", async () =>
   });
 });
 
+test("keep during the OCR await attaches the read instead of burning it", async () => {
+  let entered = false;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await withKeyedMeta(async () => {
+    const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
+    const id = created.body.sessionId;
+    await post(`/api/session/${id}/say`, { utterance: "I consent" });
+    const lockP = post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    for (let i = 0; i < 100 && !entered; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(entered, "OCR await entered before keep");
+    const kept = await post(`/api/session/${id}/keep`, {});
+    assert.equal(kept.status, 200);
+    release();
+    const abandoned = await lockP;
+    assert.equal(abandoned.body.stage, "reading_front", "stale lock turn abandoned");
+    assert.equal(abandoned.body.pendingCapture, null);
+    let step = { body: { stage: "reading_front" } };
+    for (let i = 0; i < 12 && step.body.stage !== "decided"; i++) {
+      const event = AUTO_SIGNAL[step.body.stage];
+      step = await post(`/api/session/${id}/signal`, { event });
+    }
+    assert.equal((await getTwinOcr(step.body.customerLink)).front.source, "ocr");
+  }, {
+    wonderImpl: async () => {
+      entered = true;
+      await gate;
+      return { ok: true, json: async () => ({ output_text: FRONT_JSON }) };
+    },
+  });
+});
+
 test("deny during the OCR await abandons the lock; nothing resurrects", async () => {
   let entered = false;
   let release;

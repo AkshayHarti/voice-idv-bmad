@@ -1156,11 +1156,17 @@ async function performLock(
           { env: processEnv() },
         );
         // Staleness guard: a keep/retake/deny/signal that landed during the
-        // await owns the state now — abandon the lock, discard the read.
+        // await owns the state now — abandon the lock turn. But a kept ref
+        // was legitimately kept: attach the read to it instead of burning a
+        // paid result (deny purged captures so the ref is absent; retake and
+        // signal never add it).
         if (
           session.pendingCapture !== ref ||
           session.flow.stage !== stageAtLock
         ) {
+          if (ocr.fields && session.captures.includes(ref)) {
+            session.ocrByCapture[ref] = ocr.fields;
+          }
           return stepBody(session, id, null, false);
         }
         if (ocr.fields) session.pendingOcr = ocr.fields;
