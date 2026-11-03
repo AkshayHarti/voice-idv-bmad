@@ -789,7 +789,7 @@ app.post("/api/session/:id/say", async (c) => {
   const session = sessions.get(c.req.param("id"));
   if (!session) return c.json({ error: "unknown_session" }, 404);
 
-  const body = (await c.req.json().catch(() => ({}))) as { utterance?: string };
+  const body = (await c.req.json().catch(() => ({}))) as { utterance?: string; crop?: unknown };
   const utterance = String(body.utterance ?? "");
   // Voice equivalents for the open retake pair (closed intents untouched;
   // the advance still runs through the backend signal inside doKeep).
@@ -860,7 +860,10 @@ app.post("/api/session/:id/say", async (c) => {
     LOCK_NOW_UTTERANCE.test(utterance) &&
     CAPTURE_STAGES.has(session.flow.stage)
   ) {
-    return c.json(await performLock(session, c.req.param("id"), utterance));
+    // Voice locks carry the same crop the tap path grabs: without it,
+    // every voice run degrades to fixture fallback.
+    const voiceCrop = typeof body.crop === "string" ? body.crop : null;
+    return c.json(await performLock(session, c.req.param("id"), utterance, voiceCrop));
   }
   const before = session.flow.stage;
   const next = say(session.flow, utterance);
@@ -2911,8 +2914,18 @@ async function respond(utterance) {
     disarmToCoaching();
   }
 
+  // Voice "lock now" on a doc stage carries the locked crop like a tap —
+  // otherwise voice runs can never OCR and always fall back.
+  const sayBody = { utterance };
+  if (
+    LOCK_NOW_HEARD.test(utterance) &&
+    (captureStage === 'awaiting_doc_front' || captureStage === 'awaiting_doc_back')
+  ) {
+    const voiceCrop = takeCrop();
+    if (voiceCrop) sayBody.crop = voiceCrop;
+  }
   try {
-    const step = await post('/api/session/' + sessionId + '/say', { utterance });
+    const step = await post('/api/session/' + sessionId + '/say', sayBody);
     busy = false;
     try {
       await drive(step);

@@ -330,6 +330,7 @@ test("client posts the locked crop on doc stages only, capped", async () => {
   assert.ok(page.includes("CROP_MAX_DIM"), "crop downscaled");
   assert.ok(page.includes("url.length > CROP_MAX_CHARS"), "over-cap grabs dropped");
   assert.ok(page.includes("takeSnapshot"), "confirm-card snapshot path untouched");
+  assert.ok(page.includes("sayBody.crop = voiceCrop"), "voice lock-now attaches the crop");
 });
 
 test("passport doc locks never OCR: photo pages are not licences", async () => {
@@ -423,6 +424,29 @@ test("short non-image crops lock cleanly and fall back with zero Wonder calls", 
     assert.equal(step.body.report.ocr.front.source, "fixture-fallback");
   }, { seen });
   assert.ok(!seen.includes(META_MODELS.wonder), "non-image crops never reach OCR");
+});
+
+test("voice 'lock now' OCRs the locked frame like a tap", async () => {
+  const seen = [];
+  await withKeyedMeta(async () => {
+    const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
+    const id = created.body.sessionId;
+    await post(`/api/session/${id}/say`, { utterance: "I consent" });
+    const locked = await post(`/api/session/${id}/say`, {
+      utterance: "lock now",
+      crop: "data:image/jpeg;base64,AAA",
+    });
+    assert.equal(locked.status, 200);
+    assert.ok(locked.body.pendingCapture, "voice lock opens the pair");
+    await post(`/api/session/${id}/keep`, {});
+    let step = { body: { stage: "reading_front" } };
+    for (let i = 0; i < 12 && step.body.stage !== "decided"; i++) {
+      const event = AUTO_SIGNAL[step.body.stage];
+      step = await post(`/api/session/${id}/signal`, { event });
+    }
+    assert.equal(step.body.report.ocr.front.source, "ocr");
+  }, { seen });
+  assert.ok(seen.includes(META_MODELS.wonder), "voice lock reaches Wonder");
 });
 
 test("action-form locks carry the crop to OCR", async () => {
