@@ -143,6 +143,14 @@ test("arm-clean gates the run on faults and motion", () => {
   }
 });
 
+test("out-of-range numerics fail closed: fault, never arm", () => {
+  for (const sample of [{ skew: 1e9 }, { glare: 1e9 }, { dark: 1e9 }]) {
+    assert.notEqual(faultKey(sample), null, JSON.stringify(sample));
+    assert.equal(isArmClean(sample), false, JSON.stringify(sample));
+    assert.equal(isLockReady(sample), false, JSON.stringify(sample));
+  }
+});
+
 test("motion never coaches, faults, or blocks manual lock", () => {
   assert.equal(faultKey({ motion: 0.9 }), null);
   assert.deepEqual(coach({ motion: 0.9 }), {

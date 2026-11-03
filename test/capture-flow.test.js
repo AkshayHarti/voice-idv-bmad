@@ -972,6 +972,18 @@ test("the clean run resets on advance, retake, deny, and camera loss", async () 
   assert.equal(rearmed.text, "Lost the steady frame — hold still and I'll try again.");
 });
 
+test("garbage telemetry never faults or arms; huge readings fail closed", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  const garbage = await sample(id, { glare: "lots", dark: null, motion: "fast" });
+  assert.equal(garbage.fault, null);
+  assert.equal(garbage.cleanStreak, 1);
+  const huge = await sample(id, { skew: 1e9 });
+  assert.equal(huge.fault, "skew");
+  assert.equal(huge.armed, false);
+  assert.equal(huge.cleanStreak, 0);
+});
+
 test("stray samples behind an open pair never rebuild the run", async () => {
   const id = await start("nsw-dl-clean");
   await say(id, "I consent");
