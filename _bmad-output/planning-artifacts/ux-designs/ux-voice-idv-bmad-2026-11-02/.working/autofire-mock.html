@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto-fire moment — armed frame + hold-still beat</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0B0E13;color:#EDEFF4;font-family:ui-sans-serif,-apple-system,system-ui,sans-serif;
+       display:flex;gap:2rem;justify-content:center;align-items:flex-start;padding:2rem 1rem;flex-wrap:wrap}
+  .col{max-width:340px}
+  .col h2{font-family:Georgia,serif;font-style:italic;font-size:1.05rem;margin-bottom:.3rem}
+  .col>p{color:#9AA3B2;font-size:.8rem;margin-bottom:.8rem}
+  .phone{border:1px solid #222B3A;border-radius:18px;overflow:hidden;background:#0B0E13}
+  .screen{padding:.9rem}
+  .spoken{font-size:1rem;font-weight:600;margin:.3rem 0 .7rem;min-height:2.6em}
+  .spoken .who{display:block;font-size:.62rem;letter-spacing:.2em;color:#5B6472;font-weight:500}
+  .frame{position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:4/3;margin:.4rem 0}
+  .frame svg{position:absolute;inset:0;width:100%;height:100%}
+  .frame .meta{position:absolute;left:.6rem;bottom:.5rem;font-size:.66rem;letter-spacing:.1em;
+               text-transform:uppercase;color:#9AA3B2}
+  .frame.armed .meta{color:#4ADE80}
+  .frame.locked{box-shadow:0 0 0 2px #4ADE80,0 0 24px rgba(74,222,128,.3)}
+  .frame.locked .meta{color:#4ADE80}
+  .lockrow{display:flex;justify-content:space-between;align-items:center;margin:.5rem 0}
+  .lockrow button{background:#1A2130;color:#EDEFF4;border:1px solid #222B3A;border-radius:6px;
+                  padding:.55rem 1rem;font-size:.8rem;min-height:44px;min-width:44px;cursor:pointer}
+  .lockrow span{font-size:.72rem;color:#5B6472}
+  .confirm{background:#12161D;border:1px solid #222B3A;border-radius:10px;padding:.7rem;margin-top:.6rem}
+  .confirm img{width:100%;border-radius:6px;display:block;aspect-ratio:8/5;object-fit:cover;background:#000}
+  .confirm .cap{font-size:.82rem;margin:.5rem 0}
+  .confirm .pair{display:flex;gap:.5rem}
+  .confirm .pair button{flex:1;border-radius:6px;padding:.6rem;font-size:.8rem;min-height:44px;cursor:pointer;
+                        background:#1A2130;color:#EDEFF4;border:1px solid #222B3A;font:inherit}
+  .confirm .pair button.keep{background:#1b2740;border-color:#35507e;font-weight:600}
+  .hidden{display:none}
+  .steps{display:flex;gap:.4rem;margin-top:.8rem}
+  .steps button{flex:1;background:#1A2130;color:#9AA3B2;border:1px solid #222B3A;border-radius:8px;
+                padding:.55rem .2rem;font-size:.72rem;cursor:pointer}
+  .steps button.on{background:#7DD3FC;border-color:#7DD3FC;color:#0B0E13;font-weight:700}
+  @media(prefers-reduced-motion:reduce){.frame.locked{box-shadow:0 0 0 2px #4ADE80}}
+</style>
+</head>
+<body>
+  <div class="col">
+    <h2>The auto-fire moment, beat by beat</h2>
+    <p>Step through the new <b>Armed</b> state: guides settle, the fixed beat sounds, stillness fires the lock. Moving before the fire returns to Capturing.</p>
+    <div class="phone"><div class="screen">
+      <div class="spoken"><span class="who">ARIA · SPEAKING</span><span id="line">Tilt the top away from the light.</span></div>
+      <div class="frame" id="frame">
+        <svg viewBox="0 0 320 240" aria-hidden="true">
+          <rect x="60" y="40" width="200" height="160" rx="8" fill="none" id="guide"
+                stroke="#38BDF8" stroke-width="3" stroke-dasharray="28 14"/>
+        </svg>
+        <div class="meta" id="meta">capturing…</div>
+      </div>
+      <div class="lockrow"><span>Manual fallback stays put</span><button type="button" id="lockBtn">Lock</button></div>
+      <div class="confirm hidden" id="confirm">
+        <img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='400'%3E%3Crect width='640' height='400' fill='%231a2130'/%3E%3Crect x='40' y='40' width='560' height='320' rx='12' fill='%23222b3a' stroke='%234ADE80' stroke-width='3'/%3E%3C/svg%3E">
+        <div class="cap">Front captured: sharp, all four corners in.</div>
+        <div class="pair"><button class="keep" type="button">Keep</button><button type="button">Retake</button></div>
+      </div>
+      <div class="steps">
+        <button type="button" data-s="0" class="on">1 · Capturing</button>
+        <button type="button" data-s="1">2 · Armed</button>
+        <button type="button" data-s="2">3 · Locked</button>
+      </div>
+    </div></div>
+  </div>
+<script>
+const LINES = [
+  'Tilt the top away from the light.',
+  'Hold still… captured.',
+  'Good framing — captured front.',
+];
+const frame = document.getElementById('frame');
+const guide = document.getElementById('guide');
+const meta = document.getElementById('meta');
+const line = document.getElementById('line');
+const confirm = document.getElementById('confirm');
+function show(i) {
+  document.querySelectorAll('.steps button').forEach(b => b.classList.toggle('on', +b.dataset.s === i));
+  line.textContent = LINES[i];
+  frame.classList.toggle('armed', i === 1);
+  frame.classList.toggle('locked', i === 2);
+  confirm.classList.toggle('hidden', i !== 2);
+  if (i === 0) { guide.setAttribute('stroke', '#38BDF8'); guide.setAttribute('stroke-dasharray', '28 14'); meta.textContent = 'capturing…'; }
+  if (i === 1) { guide.setAttribute('stroke', '#38BDF8'); guide.setAttribute('stroke-dasharray', 'none'); meta.textContent = 'steady — hold still…'; }
+  if (i === 2) { guide.setAttribute('stroke', '#4ADE80'); guide.setAttribute('stroke-dasharray', 'none'); meta.textContent = 'locked'; }
+}
+document.querySelectorAll('.steps button').forEach(b => b.onclick = () => show(+b.dataset.s));
+</script>
+</body>
+</html>

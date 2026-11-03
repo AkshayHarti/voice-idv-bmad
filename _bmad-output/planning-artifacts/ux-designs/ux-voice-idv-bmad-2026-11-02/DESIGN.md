@@ -129,7 +129,7 @@ Tonal layering, not shadows: base → raised → overlay. The coach card and gen
 
 - **Voice orb** — the assistant's face (≥44pt). Idle: faint ring. Listening/speaking: sky pulse synced to audio energy (static glow under reduced motion). Tap toggles mute; long-press reserved for system use with a documented accessible path.
 - **Spoken line** — current utterance in `{typography.spoken.fontSize}` at `{typography.spoken.fontWeight}`. Updates per Turn; the previous line collapses into the transcript. Never shows two live lines at once.
-- **Capture frame** — full-bleed camera with guide overlay: corner brackets for documents, oval for faces, rails for alignment. Guides render `{colors.frame-guide}` (amber `{colors.signal-warn}` during warn turns); on lock they flash `{colors.signal-ok}` once, gain check-ticks, and hold, while the meta label flips `capturing…` → `locked`. Haptic tick on lock where available. Docked at the chat on capture start (see Layout & Spacing); docking animates opacity/position only — instant under reduced motion, still announced — guides never re-lay-out mid-capture.
+- **Capture frame** — full-bleed camera with guide overlay: corner brackets for documents, oval for faces, rails for alignment. Guides render `{colors.frame-guide}` (amber `{colors.signal-warn}` during warn turns); as the frame approaches lock-ready they settle to steady, and on lock they flash `{colors.signal-ok}` once, gain check-ticks, and hold, while the meta label flips `capturing…` → `locked`. Haptic tick on lock where available. A Lock control stays visible as manual fallback (frame meta row, ≥44pt). Docked at the chat on capture start (see Layout & Spacing); docking animates opacity/position only — instant under reduced motion, still announced — guides never re-lay-out mid-capture.
 - **Coach card** — one coaching instruction at a time (`surface-raised`, hairline border): short imperative + optional diagram slot. Replaces, never stacks — a new instruction retires the old.
 - **Confirm card** — post-lock review in the dock (see `.working/confirm-card-mock.html`): the captured image at card width (`rounded/sm`, `alt=""` decorative), a caption carrying the quality verdict, and the Keep / Retake pair. Same tonal treatment as the coach card; the image is the only photography on the surface. Retires on keep/retake — never persists beside the next stage.
 - **Generated panel** — assistant-assembled UI for the current Turn (field confirmations, retake options, progress). Middle region only; composed from primitives in `EXPERIENCE.md` Component Patterns. Must always include a text equivalent of any choice it presents.
@@ -149,6 +149,8 @@ Tonal layering, not shadows: base → raised → overlay. The coach card and gen
 | Frame docks at the chat on capture start | Frame stranded at page top while the user chats at the bottom |
 | Show the capture in a confirm card before keep/retake | Blind keep/retake judged from memory |
 | Rotate repeats across approved variants | The same sentence twice in a row |
+| Fire automatically after a clean run, beat first | Force a tap the frame could take itself |
+| Show guides + voice, hide detection | Narrate internals ("3 of 4 corners") |
 | Static glow + haptics under reduced motion | Pulsing orb, flashing frame, animated gradients |
 | Mono evidence type on Decision only | Mono body copy elsewhere |
 | Dark-first console, tonal layering | Light theme, drop-shadow hierarchy, decorative gradients |

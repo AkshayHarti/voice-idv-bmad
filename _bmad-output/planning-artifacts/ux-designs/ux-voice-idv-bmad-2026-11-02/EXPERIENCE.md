@@ -33,7 +33,7 @@ The assistant generates **panels**, never surfaces: per-Turn UI (field confirmat
 
 Microcopy. Brand voice lives in `DESIGN.md` Brand & Style. The assistant is a calm technician: short imperatives, concrete landmarks, always says what happens next. Every spoken line has a text twin on screen.
 
-**Variation policy.** Fixed meaning, varied form: coaching color owns 2–3 approved surface variants, rotated so the same sentence never sounds twice in a row within a stage. Functional prompts (consent, keep/retake, abort) are exempt — fixed wording there, always. Meaning-identical lines share one transcript tag so SR search still works. This overrides the cockpit fixed-wording inspiration for repeats — consistency lives in the checklist meaning, not the syllables. **Speech shaping:** spoken lines cap at ~12 words, commas shape pauses for the TTS engine, long information splits across turns; the engine stays browser synthesis. The text twin may differ in punctuation from the TTS string if SR/braille testing demands it.
+**Variation policy.** Fixed meaning, varied form: coaching color owns 2–3 approved surface variants, rotated so the same sentence never sounds twice in a row within a stage. Functional prompts (consent, keep/retake, abort, auto-fire beat) are exempt — fixed wording there, always. Meaning-identical lines share one transcript tag so SR search still works. This overrides the cockpit fixed-wording inspiration for repeats — consistency lives in the checklist meaning, not the syllables. **Speech shaping:** spoken lines cap at ~12 words, commas shape pauses for the TTS engine, long information splits across turns; the engine stays browser synthesis. The text twin may differ in punctuation from the TTS string if SR/braille testing demands it.
 
 | Do | Don't |
 |---|---|
@@ -55,7 +55,7 @@ Behavioral. Visual specs live in `DESIGN.md` Components.
 |---|---|---|
 | Voice orb | Assistant, Capture | Pulse follows audio energy; tap toggles mute; state always mirrored in text (Listening… / Speaking… / Muted). Mute changes audio output only — text twins and live-region announcements continue; muting itself announces ("Muted. Captions continue."). |
 | Spoken line | Assistant, Capture | Exactly one live line; updates per Turn; prior line collapses to transcript. Never edited in place mid-utterance. |
-| Capture frame | Capture | Guides per capture kind (brackets/oval/rails); lock flashes ok once + haptic; unlock returns to guide state silently. Docking: at capture start the frame node moves to the dock zone above the input/Listen row and scrolls into view; it returns home when the stage closes. |
+| Capture frame | Capture | Guides per capture kind (brackets/oval/rails); lock flashes ok once + haptic; unlock returns to guide state silently. Docking: at capture start the frame node moves to the dock zone above the input/Listen row and scrolls into view; it returns home when the stage closes. Detection stays invisible — guides + coach + voice are the interface; no detection callouts ("document found", corner counts). As the frame approaches lock-ready the guides settle to steady. |
 | Coach card | Capture | One instruction at a time; new instruction replaces old; pairs with spoken twin; [ASSUMPTION] optional diagram slot renders only when telemetry names a spatial fix (tilt, thumb, corners). Every diagram ships with a text twin at least as specific as the visual. |
 | Generated panel | Assistant | Assembled per Turn from primitives (confirm row, choice list, progress steps, evidence peek); every choice has a text equivalent; panel retires when the Turn closes. |
 | Confirm card | Capture (docked, see `.working/confirm-card-mock.html`) | After every lock: the captured image (device-local snapshot, never uploaded, `alt=""` decorative) renders in a docked card above the input with a Keep / Retake pair; the caption carries the quality verdict. Before the question, a mandatory spoken + text quality verdict sounds from coaching telemetry ("Front captured: sharp, all four corners in."), then the question names the capture ("Here's the front — keep it, or retake?") — verdict and question are separate turns. Keep/Retake accessible names carry the capture ("Keep document front"). Focus moves to the card heading on appearance and returns to the spoken-line region on retire. One transcript turn logs the step (capture, verdict, decision). A blind keep/retake with no image is a bug; a keep/retake with no non-visual quality statement is the same-weight bug. |
@@ -75,6 +75,7 @@ Behavioral. Visual specs live in `DESIGN.md` Components.
 | Coaching | Capture | Coach card + spoken twin; telemetry counters drive escalation (3rd repeat → `warn` turn + offer typed description). |
 | Camera starting | Capture | Black preview + `opening camera…` meta + spoken line; guides appear only on the first live frame. |
 | Capturing | Capture | Frame guides live; `capturing…` meta label; success = lock flash + check-tick guides + `locked` label + haptic + spoken confirm, then the confirm card shows the image before the keep/retake question. |
+| Armed | Capture | A short run of consecutive clean samples; guides steady + the fixed hold-still beat ("Hold still… captured"); movement before the fire returns to Capturing, stillness fires the lock. |
 | Capture failed | Capture | One silent retry, then the coach card notices + a short spoken line; the run holds on the stage, never advancing past a failed grab. |
 | Processing | Assistant | `progress` turns narrate async work (OCR, checks, DVS); generated progress panel shows steps without percentages-as-claims. |
 | Decided | Decision | Banner + evidence + limitations; audit panel on demand; transcript retained below. |
@@ -89,7 +90,7 @@ Behavioral. Visual specs live in `DESIGN.md` Components.
 - Speak to answer (closed intents); any prompt is barge-inable — interruption stops synthesis immediately and the partial line is marked with a polite "Interrupted." note + labeled transcript marker.
 - Tap generated-panel choices as an alternative to speaking them; tap orb to mute/unmute.
 - Type in the persistent input as the always-available fallback (voice may fail; typing never does).
-- Retake offered after every capture lock: image first in the confirm card, quality verdict, then `Keep` / `Retake` spoken + tapped; no capture is final without it. Confirmation is recognition-tolerant — near-miss utterances ("kep it") resolve to the intended choice; every resolution echoes in the spoken twin + text ("Keeping the front.") and the transcript records heard → resolved; low-confidence near-misses re-ask instead of resolving.
+- Retake offered after every capture lock: image first in the confirm card, quality verdict, then `Keep` / `Retake` spoken + tapped; no capture is final without it. Auto-fire never skips confirmation — every auto-capture lands in the confirm card. Confirmation is recognition-tolerant — near-miss utterances ("kep it") resolve to the intended choice; every resolution echoes in the spoken twin + text ("Keeping the front.") and the transcript records heard → resolved; low-confidence near-misses re-ask instead of resolving.
 - **Banned:** wake words, open-ended chat input, synthesized percentages ("87% confident"), auto-advancing past consent, hover-only affordances, generated navigation.
 
 ## Accessibility Floor
@@ -110,7 +111,7 @@ Behavioral. Visual contrast lives in `DESIGN.md`.
 1. Sienna opens the app; the assistant speaks the consent prompt and shows the consent gate.
 2. She says "I consent"; the capture frame docks above the input on the document-front stage with corner-bracket guides — no scrolling back to find it.
 3. She holds up her licence; telemetry sees glare on the hologram — coach card + voice: "Tilt the top slightly away from the light — better, hold there."
-4. Frame locks (flash + tick + "Good framing — captured front"); the image appears in the docked confirm card, the verdict speaks ("Front captured: sharp, all four corners in."), then the question ("Here's the front — keep it, or retake?") — and she keeps it. Back, challenge, and selfie stages follow the same coach→lock→confirm rhythm.
+4. The frame auto-fires after a clean run — hold-still beat, flash + tick + "Good framing — captured front"; the image appears in the docked confirm card, the verdict speaks ("Front captured: sharp, all four corners in."), then the question ("Here's the front — keep it, or retake?") — and she keeps it. Back, challenge, and selfie stages follow the same coach→lock→confirm rhythm.
 5. Assistant narrates comparing ("Checking your details now…"); the Decision surface renders.
 6. **Climax:** the verdict speaks — "Verified. All checks passed including the DVS match" — while the failures-first evidence list (all pass) and limitations sit on screen for the letting agent beside her. Voice decided nothing; the checks did.
 
@@ -163,6 +164,7 @@ Product-specific: who speaks when while the camera is live.
 - The camera never opens silently: an `instruct` turn names the capture and the landmark before guides appear.
 - During active guidance, speech is throttled to one instruction per fault episode (no chatter while the user is mid-correction); the coach card holds the instruction visually meanwhile.
 - Lock is always shown, then announced: the captured image renders in the confirm card first, then the quality-verdict turn, then the spoken confirm + keep/retake question. A silent capture is a bug; a blind keep/retake is a bug; a verdict-less keep/retake is a bug.
+- Capture is auto-primary: the frame fires itself after a short run of consecutive clean samples with the hold-still beat; movement before the fire interrupts and re-arms. The Lock control stays as manual fallback (edge cases, stand-ins). This settles the brainstorm auto-capture contradiction: Musts 10/11 upheld in modified form, not auto-only.
 - The microphone yields to capture sounds: guidance pauses while the shutter/frame grab runs, then resumes. Barge-in stays live throughout — the user can always interrupt.
 - Comparing is narrated, never silent: at least one `progress` turn covers OCR→checks→DVS, more if it runs long.
 
@@ -176,6 +178,9 @@ Product-specific: who speaks when while the camera is live.
 - **Rejected — silent auto-capture:** a capture the user didn't confirm is a consent violation wearing a convenience costume.
 - **Rejected — verbatim repeats:** the identical sentence twice in a row reads as a machine stuck in a loop, however true the words.
 - **Rejected — blind keep/retake:** asking Keep or Retake without showing the capture forces the user to judge from memory.
+- **Rejected — manual-only capture:** forcing a tap the frame could take itself.
+- **Rejected — detection narration:** announcing internals ("document found", "3 of 4 corners") the guides already show.
+- **Rejected — countdown capture:** counting down turns a calm frame into a timed test; the hold-still beat holds instead.
 
 ## Responsive & Platform
 

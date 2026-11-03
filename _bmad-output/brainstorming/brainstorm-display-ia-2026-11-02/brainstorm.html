@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>What the User Sees When Voice Leads — A Brainstorm Keepsake</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--ink:#1b2433;--paper:#ffffff;--gold:#8a5f0e;--teal:#0e7a4e;--rose:#c81e1e;--sky:#0b6bcb}
+body{background:#fff;color:var(--ink);font-family:Georgia,'Times New Roman',serif;line-height:1.7;overflow-x:hidden}
+.sans{font-family:-apple-system,'Segoe UI',Inter,Helvetica,Arial,sans-serif}
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:4rem 1.5rem;position:relative;background:radial-gradient(ellipse 80% 60% at 50% 120%,#e8f4ec 0%,transparent 60%),radial-gradient(ellipse 50% 40% at 80% 10%,#e3eefb 0%,transparent 60%),#fff}
+.hero .kicker{letter-spacing:.35em;text-transform:uppercase;font-size:.7rem;color:var(--gold);font-family:-apple-system,sans-serif;margin-bottom:1.5rem}
+.hero h1{font-size:clamp(2rem,6vw,4.5rem);line-height:1.1;max-width:16ch;font-style:italic}
+.hero h1 em{color:var(--teal);font-style:normal}
+.wavewrap{width:min(560px,90vw);height:90px;margin:2rem auto 1rem}
+.hero .sub{max-width:52ch;color:#33405a;font-size:1.12rem}
+.hero .meta{margin-top:2rem;display:flex;gap:.6rem;flex-wrap:wrap;justify-content:center;font-family:-apple-system,sans-serif;font-size:.75rem}
+.chip{border:1px solid #c9d2e0;border-radius:99px;padding:.35rem .9rem;color:#4a5568;background:#f6f8fb}
+.chip b{color:var(--gold)}
+.scrollhint{position:absolute;bottom:1.4rem;color:#8a93ad;font-size:.75rem;letter-spacing:.25em;text-transform:uppercase;font-family:-apple-system,sans-serif;animation:bob 2.4s ease-in-out infinite}
+@keyframes bob{50%{transform:translateY(8px)}}
+section{padding:5rem 1.5rem;max-width:1000px;margin:0 auto}
+.tnum{font-family:-apple-system,sans-serif;font-size:.72rem;letter-spacing:.3em;text-transform:uppercase;opacity:.75}
+h2{font-size:clamp(1.8rem,4.5vw,2.8rem);line-height:1.15;margin:.5rem 0 1rem}
+.lede{color:#33405a;max-width:60ch;margin-bottom:2rem;font-size:1.05rem}
+.reveal{transition:opacity .7s ease,transform .7s ease}
+.reveal.will{opacity:0;transform:translateY(26px)}
+.reveal.on{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){.reveal{transition:none}.scrollhint,.frame,.sweep,.blip,.stamp.guilty{animation:none}}
+</style>
+</head>
+<body>
+<div class="hero">
+<div class="kicker">Brainstorm keepsake · 2026-11-02 · facilitator mode</div>
+<h1>What does the user <em>see</em> when voice leads?</h1>
+<canvas class="wavewrap" id="wave" width="560" height="90"></canvas>
+<p class="sub">One evening, one question: <b>display IA for the user screen</b> of a voice-first ID-verification assistant. Goal — land a display plan for what the user sees, per surface and per stage. Four techniques. One murder. This is the artifact it left behind.</p>
+<div class="meta"><span class="chip">Topic: <b>display IA</b></span><span class="chip">User pasted: <b>2 techniques</b></span><span class="chip">Facilitator added: <b>2 more</b></span><span class="chip">Status: <b>complete</b></span></div>
+<div class="scrollhint">scroll · the dig begins ↓</div>
+</div>
+
+<!-- ══════════ TECHNIQUE 1 · FIRST PRINCIPLES ══════════ -->
+<style>
+.dig{background:linear-gradient(180deg,#fff,#faf5e9 30%,#f6eeda);border-top:1px solid #e3c87e;border-bottom:1px solid #e3c87e;max-width:none}
+.digInner{max-width:1000px;margin:0 auto}
+.strata{margin:2.5rem 0;border-radius:14px;overflow:hidden;border:1px solid #d9bd7f}
+.stratum{padding:1.4rem 1.6rem;cursor:pointer;transition:filter .3s;position:relative}
+.stratum:hover{filter:brightness(1.03)}
+.stratum .depth{font-family:-apple-system,sans-serif;font-size:.68rem;letter-spacing:.2em;text-transform:uppercase;opacity:.7}
+.stratum h3{font-size:1.25rem;margin:.2rem 0}
+.stratum p{font-size:.95rem;color:#5a4d2a}
+.s1{background:#f3ecdb}.s2{background:#efe0c2}.s3{background:#e9d2a4}.s4{background:#fff;border:2px solid var(--gold)}
+.s4 h3{color:var(--gold)}
+.truths{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin-top:2rem}
+.truth{background:#f4efe4;color:#1a1408;border-radius:10px;padding:1.4rem;transform:rotate(-.6deg);box-shadow:0 10px 30px #0009;font-family:-apple-system,sans-serif}
+.truth:nth-child(2){transform:rotate(.8deg)}
+.truth:nth-child(3){transform:rotate(-.3deg)}
+.truth .n{font-size:.7rem;letter-spacing:.25em;text-transform:uppercase;color:#8a6d1f}
+.truth strong{font-size:1.05rem;display:block;margin:.3rem 0}
+.truth p{font-size:.88rem;color:#4a4028}
+.verdict{margin-top:2rem;background:#eef7f1;border:1px dashed var(--teal);border-radius:12px;padding:1.4rem 1.6rem;font-family:-apple-system,sans-serif}
+.verdict b{color:var(--teal)}
+.locatable{margin-top:1.2rem;font-style:italic;color:var(--gold);font-size:1.1rem}
+</style>
+<section class="dig reveal"><div class="digInner">
+<div class="tnum" style="color:var(--gold)">Technique 01 · First Principles Thinking — the excavation</div>
+<h2>Strip the screen to bedrock.</h2>
+<p class="lede">We bulldozed every pixel and asked: what must the user know, at this exact moment, or the whole ritual fails? Click each stratum to dig deeper.</p>
+<div class="strata sans">
+<div class="stratum s1"><div class="depth"> topsoil · −0m · assumptions </div><h3>“Show them everything, just in case.”</h3><p>Rejected. Chrome is sediment, not structure. Dig.</p></div>
+<div class="stratum s2"><div class="depth"> clay · −3m · bedrock truth ① </div><h3>What do I do right now?</h3><p>The user needs to know what to do <i>at that moment</i>. One current action. Nothing else earns the light.</p></div>
+<div class="stratum s3"><div class="depth"> rock · −9m · bedrock truth ② </div><h3>Where am I in the ritual?</h3><p>The user needs to know where he is at in the process — position exists <i>so failure is locatable</i>: you know exactly which parts you could not complete.</p></div>
+<div class="stratum s4"><div class="depth"> ★ bedrock · −20m · bedrock truth ③ </div><h3>Proven or merely attempted?</h3><p>Not done-vs-failed. <b>Proven-vs-attempted.</b> A step can be tried and still unproven — and the screen must say so honestly.</p></div>
+</div>
+<div class="truths">
+<div class="truth"><div class="n">the three truths · i</div><strong>Current action</strong><p>One verb, now. “Hold your ID in the frame.”</p></div>
+<div class="truth"><div class="n">the three truths · ii</div><strong>Position</strong><p>You are at step 3 of 5. Failure has an address.</p></div>
+<div class="truth"><div class="n">the three truths · iii</div><strong>Proof state</strong><p>Proven ✓ vs attempted ○. Never blur them.</p></div>
+</div>
+<div class="verdict">⚖️ <b>Rebuild verdict:</b> every current screen element must re-earn its place under the three truths — or be buried in the dig.</div>
+<p class="locatable">“Position exists so failure is locatable.” — the line that survived the excavation.</p>
+</div></section>
+
+<!-- ══════════ TECHNIQUE 2 · DECISION TREE ══════════ -->
+<style>
+.tree{max-width:none;background:linear-gradient(180deg,#f6eeda,#eef4fa 40%,#fff)}
+.treeInner{max-width:1000px;margin:0 auto}
+.rail{display:flex;gap:0;margin:2.5rem 0 1rem;overflow-x:auto;padding-bottom:1rem}
+.station{flex:1;min-width:150px;text-align:center;position:relative;font-family:-apple-system,sans-serif}
+.station::before{content:"";position:absolute;top:26px;left:-50%;width:100%;height:3px;background:linear-gradient(90deg,var(--sky),var(--teal));opacity:.6}
+.station:first-child::before{display:none}
+.dot{width:52px;height:52px;border-radius:50%;margin:0 auto .6rem;display:flex;align-items:center;justify-content:center;font-size:1.3rem;background:#fff;border:2px solid var(--sky);position:relative;z-index:1}
+.station.live .dot{border-color:var(--teal);box-shadow:0 0 24px #0e7a4e33}
+.station h4{font-size:.85rem}.station p{font-size:.72rem;color:#55607a}
+.forks{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-top:1.5rem;font-family:-apple-system,sans-serif}
+.fork{background:#fff;border:1px solid #b9d4ef;border-radius:12px;padding:1.2rem 1.3rem}
+.fork h4{color:var(--sky);font-size:.95rem;margin-bottom:.5rem}
+.fork ul{font-size:.85rem;color:#33405a;list-style:none}
+.fork li{margin:.35rem 0;padding-left:1.2em;position:relative}
+.fork li::before{content:"→";position:absolute;left:0;color:var(--teal)}
+.fork.bad{border-color:#f0a8a8}.fork.bad h4{color:var(--rose)}
+.fork.bad li::before{content:"✕";color:var(--rose)}
+.redframe{margin-top:2rem;background:#fdf0f0;border:1px solid #f0a8a8;border-radius:14px;padding:2rem;text-align:center;font-family:-apple-system,sans-serif}
+.frame{width:min(340px,80vw);height:200px;margin:1rem auto;border:4px solid var(--rose);border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.4rem;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{border-color:#f3c2c2;box-shadow:none}0%,100%{box-shadow:0 0 40px #c81e1e33}}
+.frame b{color:var(--rose);letter-spacing:.15em}.frame span{font-size:.78rem;color:#8a3b3b}
+.treeq{margin-top:1.5rem;font-style:italic;color:#55607a}
+details.fork summary{cursor:pointer;color:var(--sky);font-weight:700}
+</style>
+<section class="tree reveal"><div class="treeInner">
+<div class="tnum" style="color:var(--sky)">Technique 02 · Decision Tree Mapping — the five-station railway</div>
+<h2>Every journey forks. Map all of it.</h2>
+<p class="lede">Five moments, no more. A little railway from “hello” to “done” — with sidings for every unhappy path. Hover the stations; open the forks.</p>
+<div class="rail">
+<div class="station live"><div class="dot">👋</div><h4>1 · Welcome</h4><p>moment one — greet the user</p></div>
+<div class="station"><div class="dot">🤝</div><h4>2 · Consent</h4><p>moment two — ask permission</p></div>
+<div class="station"><div class="dot">🪪</div><h4>3 · ID doc</h4><p>moment three — present &amp; capture</p></div>
+<div class="station"><div class="dot">🤳</div><h4>4 · Selfie</h4><p>moment four — capture face</p></div>
+<div class="station"><div class="dot">🏁</div><h4>5 · Done</h4><p>moment five — land the ending</p></div>
+</div>
+<div class="forks">
+<div class="fork"><h4>🪪 Doc · happy path</h4><ul><li>Show the capture frame</li><li>Guide toward the perfect image</li><li>Detect fraud / distress → report to backend</li></ul></div>
+<div class="fork bad"><h4>🪪 Doc · unhappy paths</h4><ul><li>No camera permission → guide to enable</li><li>Expired doc → spoken aloud</li><li>Unclear doc → re-capture coaching</li></ul></div>
+<div class="fork"><h4>🤝 Consent fork</h4><ul><li>Consent ✓ → proceeds to doc capture</li><li>Deny ✕ → stops, spoken thank-you, exit</li></ul></div>
+<div class="fork"><h4>🏁 Done fork</h4><ul><li>Verified ✓ → “thanks, complete”</li><li>Failed ✕ → “sorry, retry”</li></ul></div>
+<details class="fork"><summary>🤳 Selfie branches (tap to unfold)</summary><ul style="margin-top:.6rem"><li>Mirror of doc capture — same happy path</li><li>Same unhappy paths, face-flavored</li></ul></details>
+</div>
+<div class="redframe">
+<div class="tnum" style="color:var(--rose)">exhibit A · the expired-doc ending</div>
+<div class="frame"><b>⚠ EXPIRED DOCUMENT</b><span>spoken aloud · all captures deleted</span><span>branch ends on 3-min timeout or tab close</span></div>
+<p style="color:#8a3b3b;font-size:.85rem;max-width:52ch;margin:0 auto">Red blinking frame border signals failure. Nothing is kept. The branch simply… ends. This became the <i>template for all unhappy endings</i>.</p>
+</div>
+<p class="treeq">“Selfie branches mirror doc capture” — one design, two costumes.</p>
+</div></section>
+
+<!-- ══════════ TECHNIQUE 3 · JOB TO BE DONE ══════════ -->
+<style>
+.jtbd{max-width:none;background:radial-gradient(ellipse 60% 50% at 50% 0%,#e6f4ec 0%,transparent 60%),#fff;border-top:1px solid #bfe3d2}
+.jtbdInner{max-width:1000px;margin:0 auto}
+.radar{display:flex;gap:2rem;align-items:center;flex-wrap:wrap;margin:2rem 0}
+.scope{width:210px;height:210px;border-radius:50%;border:2px solid #0e7a4e66;position:relative;flex-shrink:0;margin:0 auto;overflow:hidden;background:radial-gradient(circle,#eef7f1 0%,#fff 70%)}
+.scope::before,.scope::after{content:"";position:absolute;border:1px solid #0e7a4e33;border-radius:50%}
+.scope::before{inset:26%;}.scope::after{inset:8% 8% 8% 8%;border:none;border-top:1px solid #0e7a4e33;border-radius:0;top:50%}
+.sweep{position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,#0e7a4e55,transparent 70deg);animation:spin 3s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.blip{position:absolute;width:12px;height:12px;border-radius:50%;background:var(--teal);box-shadow:0 0 14px var(--teal);top:32%;left:62%;animation:blip 3s ease-in-out infinite}
+@keyframes blip{0%,60%,100%{opacity:.15}30%{opacity:1}}
+.jobstates{flex:1;min-width:260px;font-family:-apple-system,sans-serif}
+.jstate{background:#f0f7f3;border:1px solid #bfe3d2;border-radius:10px;padding:.9rem 1.1rem;margin:.6rem 0;font-size:.9rem;color:#23402f}
+.jstate b{color:var(--teal)}
+.jstate.idle{opacity:.75}.jstate.fire{border-color:var(--teal);box-shadow:0 0 18px #0e7a4e22}
+.autobanner{margin-top:1.5rem;text-align:center;font-family:-apple-system,sans-serif;background:linear-gradient(90deg,transparent,#0e7a4e14,transparent);padding:1.2rem;border-radius:12px}
+.autobanner .big{font-size:1.5rem;font-weight:800;letter-spacing:.02em}
+.autobanner .big s{color:#c81e1e99;font-weight:400}
+.autobanner p{font-size:.85rem;color:#4a6a58}
+.walkaway{margin-top:1.2rem;background:#f4efe4;color:#1a1408;border-radius:12px;padding:1.3rem 1.5rem;font-family:-apple-system,sans-serif;display:flex;gap:1rem;align-items:center}
+.walkaway .face{font-size:2.2rem}
+</style>
+<section class="jtbd reveal"><div class="jtbdInner">
+<div class="tnum" style="color:var(--teal)">Technique 03 · Job to Be Done — the patient hunter</div>
+<h2>The app idles. Then it pounces.</h2>
+<p class="lede">We stopped asking “what should the screen show?” and asked “what job hired this screen?” Answer: a hunter that waits in the grass until conditions are <i>processing-ready</i> — then auto-captures. No shutter button. No mercy for manual.</p>
+<div class="radar">
+<div class="scope"><div class="sweep"></div><div class="blip"></div></div>
+<div class="jobstates">
+<div class="jstate idle"><b>IDLE ·</b> app waits — “app idles until a document appears…”</div>
+<div class="jstate"><b>🪪 DOC JOB ·</b> “…then auto-captures when conditions are <b>processing-ready</b>”</div>
+<div class="jstate"><b>🤳 SELFIE JOB ·</b> “selfie auto-captures once the <b>natural face</b> is processing-ready”</div>
+<div class="jstate fire"><b>✦ CONFIRM JOB ·</b> post-capture confirmation offers <b>retry</b> — the safety net under the pounce</div>
+</div>
+</div>
+<div class="autobanner"><div class="big">AUTO-CAPTURE ALWAYS · <s>never manual</s></div><p>facilitator decision — the shutter button was voted off the island</p></div>
+<div class="walkaway"><div class="face">🚶✨</div><div><b>The confirmation job, in one line:</b> the user <i>walks away believing the capture succeeded.</i> Not hoping. Believing. That feeling is the deliverable.</div></div>
+</div></section>
+
+<!-- ══════════ TECHNIQUE 4 · KILL THE CROWN JEWEL ══════════ -->
+<style>
+.kill{max-width:none;background:linear-gradient(180deg,#fff,#fdf0f0 50%,#fff);border-top:1px solid #f0a8a8}
+.killInner{max-width:1000px;margin:0 auto}
+.suspects{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.2rem;margin:2rem 0;font-family:-apple-system,sans-serif}
+.suspect{background:#fff;border:1px solid #e5c2c2;border-radius:12px;padding:1.4rem;text-align:center;position:relative}
+.suspect .mug{font-size:3rem}
+.suspect h4{margin:.4rem 0 .2rem}.suspect p{font-size:.85rem;color:#7a4a4a}
+.suspect.cleared{opacity:.75;border-color:#9fd8bb}
+.stamp{position:absolute;top:12px;right:10px;font-size:.7rem;font-weight:800;letter-spacing:.12em;padding:.25rem .6rem;border-radius:6px;transform:rotate(8deg)}
+.stamp.innocent{color:var(--teal);border:2px solid var(--teal)}
+.stamp.guilty{color:var(--rose);border:2px solid var(--rose);animation:shake .5s ease 2}
+@keyframes shake{25%{transform:rotate(4deg)}75%{transform:rotate(12deg)}}
+.coachcard{margin:1.5rem auto;max-width:420px;background:#fff;color:#222;border:1px solid #d8d2c2;border-radius:12px;padding:1.2rem 1.3rem;font-family:-apple-system,sans-serif;position:relative;transition:all .5s}
+.coachcard.dead{transform:rotate(-4deg) scale(.96);filter:grayscale(1);opacity:.55}
+.coachcard.dead::after{content:"✕ KILLED";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:2rem;font-weight:900;color:#c00;background:#ff000022;border-radius:12px;letter-spacing:.1em}
+.killbtn{display:block;margin:1rem auto;background:var(--rose);color:#fff;border:none;border-radius:99px;padding:.8rem 2.2rem;font-size:1rem;font-weight:700;cursor:pointer;font-family:-apple-system,sans-serif}
+.killbtn:hover{filter:brightness(1.15)}
+.survivors{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1.5rem;font-family:-apple-system,sans-serif}
+@media(max-width:600px){.survivors{grid-template-columns:1fr}}
+.survivor{background:#f0f7f3;border:1px solid #9fd8bb;border-radius:12px;padding:1.2rem}
+.survivor b{color:var(--teal)}
+.survivor p{font-size:.88rem;color:#2c4a38}
+.killinsight{margin-top:1.8rem;font-size:1.15rem;font-style:italic;text-align:center;color:#8a3b3b}
+</style>
+<section class="kill reveal"><div class="killInner">
+<div class="tnum" style="color:var(--rose)">Technique 04 · Kill the Crown Jewel — a murder mystery in one act</div>
+<h2>Someone must die. We picked the wrong victim first.</h2>
+<p class="lede">The game: name the screen's crown jewel, then kill it and see what survives. Our first accusation was wrong — and the correction cracked the whole session open.</p>
+<div class="suspects">
+<div class="suspect cleared"><div class="stamp innocent">CLEARED ✓</div><div class="mug">🖼️</div><h4>Suspect №1: the capture frame</h4><p>First accused as crown jewel. But kill the frame and capture still needs a window… suspicion shifted.</p></div>
+<div class="suspect"><div class="stamp guilty">GUILTY ✕</div><div class="mug">🃏</div><h4>Suspect №2: the coach card</h4><p><b>Corrected verdict:</b> the coach card, <i>not</i> the capture frame, is the true crown jewel. So — kill it.</p></div>
+</div>
+<div class="coachcard" id="coachcard"><b>📋 Coach card</b><br><span style="font-size:.88rem">“Hold steady… move left… a little closer… perfect, hold it…”</span><br><span style="font-size:.75rem;color:#666">the UI chrome that bosses you around in little text boxes</span></div>
+<button class="killbtn" onclick="document.getElementById('coachcard').classList.toggle('dead')">🔪 Kill the coach card</button>
+<div class="survivors">
+<div class="survivor"><b>🎙 Survivor ① — voice</b><p>Without the card, coaching survives as <b>voice</b> — spoken guidance, warm and hands-free.</p></div>
+<div class="survivor"><b>📜 Survivor ② — transcript mirror</b><p>…plus a <b>transcript mirror</b> that proves what was said. Voice coaches; text witnesses.</p></div>
+</div>
+<p class="killinsight">“The screen's real need: voice-guided capture backed by transcript for fraud-free success — not UI chrome.”</p>
+</div></section>
+
+<!-- ══════════ SYNTHESIS · THE CLIMAX ══════════ -->
+<style>
+.syn{max-width:none;background:radial-gradient(ellipse 70% 45% at 50% 0%,#e6f4ec 0%,transparent 60%),linear-gradient(180deg,#fff,#f4f7fa 60%,#fff);border-top:2px solid var(--teal);text-align:center}
+.synInner{max-width:1000px;margin:0 auto}
+.pyramid{margin:2.5rem auto;max-width:640px;font-family:-apple-system,sans-serif}
+.tier{border-radius:12px;padding:1.1rem 1rem;margin:.55rem auto;transition:transform .3s}
+.tier:hover{transform:scale(1.02)}
+.tier small{letter-spacing:.25em;text-transform:uppercase;font-size:.68rem;opacity:.8}
+.tier b{font-size:1.3rem;display:block}
+.tier p{font-size:.82rem;opacity:.85}
+.t1{background:linear-gradient(135deg,#0e7a4e,#0a5c3c);color:#fff;width:100%;box-shadow:0 0 50px #0e7a4e22}
+.t2{background:#fff;color:#1a1408;width:82%;border:1px solid #d8d2c2}
+.t3{background:#eef1f6;color:#4a5568;width:64%;border:1px solid #c9d2e0}
+.moscow{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin-top:2.5rem;text-align:left;font-family:-apple-system,sans-serif}
+.mo{border-radius:12px;padding:1.2rem 1.3rem;font-size:.84rem}
+.mo h4{font-size:.95rem;margin-bottom:.6rem;letter-spacing:.05em}
+.mo ul{list-style:none}.mo li{margin:.3rem 0;padding-left:1.1em;position:relative}
+.mo li::before{position:absolute;left:0}
+.must{background:#eef7f1;border:1px solid #9fd8bb;color:#1d4a30}.must h4{color:var(--teal)}.must li::before{content:"✓";color:var(--teal)}
+.should{background:#faf3e2;border:1px solid #d9bd7f;color:#6b5518}.should h4{color:var(--gold)}.should li::before{content:"○";color:var(--gold)}
+.could{background:#f4f6f9;border:1px dashed #b9c2d4;color:#55607a}.could h4{color:#55607a}
+.clusters{display:flex;gap:.8rem;justify-content:center;flex-wrap:wrap;margin-top:2rem;font-family:-apple-system,sans-serif}
+.cluster{border-radius:10px;padding:.8rem 1.2rem;font-size:.85rem}
+.cluster.kept{background:#eef7f1;border:1px solid #9fd8bb;color:#1d4a30}
+.cluster.dropped{background:#fdf0f0;border:1px dashed #e08a8a;color:#8a3b3b}
+.contra{margin-top:1.8rem;background:#fdf0f0;border:1px solid #e08a8a;border-radius:12px;padding:1.3rem 1.5rem;text-align:left;font-family:-apple-system,sans-serif;font-size:.9rem;color:#6e2f2f}
+.contra b{color:var(--rose)}
+.templates{margin-top:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;text-align:left;font-family:-apple-system,sans-serif;font-size:.88rem}
+.template{background:#f0f6fc;border:1px solid #b9d4ef;border-radius:12px;padding:1.2rem;color:#33405a}
+.template b{color:var(--sky)}
+.finale{margin:3rem auto 1rem;max-width:56ch;font-size:1.25rem;font-style:italic;color:var(--gold)}
+footer{padding:2.5rem 1.5rem 3rem;text-align:center;font-family:-apple-system,sans-serif;font-size:.75rem;color:#8a93ad}
+</style>
+<section class="syn reveal"><div class="synInner">
+<div class="tnum" style="color:var(--teal)">★ Synthesis · the climax — everything converges</div>
+<h2>Voice leads. Transcript proves.<br>Chrome corroborates.</h2>
+<p class="lede" style="margin:0 auto">Voice-first resolved the “need everything” panic into a hierarchy. One conductor, one witness, one backing band. Behold the pyramid:</p>
+<div class="pyramid">
+<div class="tier t1"><small>① leads · the conductor</small><b>🎙 VOICE</b><p>spoken coaching carries the ritual — greet, guide, confirm</p></div>
+<div class="tier t2"><small>② proves · the witness</small><b>📜 TRANSCRIPT</b><p>the proof-record — proven-vs-attempted lives here, fraud-free</p></div>
+<div class="tier t3"><small>③ corroborates · the backing band</small><b>🖼 CHROME</b><p>frame · position · states — supports, never stars</p></div>
+</div>
+<div class="tnum" style="color:var(--teal);margin-top:2rem">MoSCoW verdicts · facilitated</div>
+<div class="moscow">
+<div class="mo must"><h4>MUST ⬤⬤⬤</h4><ul>
+<li>current-action</li><li>position</li><li>five-moment flow</li><li>doc unhappy paths</li><li>done copy (thanks / sorry-retry)</li><li>selfie-mirrors-doc</li><li>always auto-capture</li><li>post-capture confirm + retry</li><li>voice + transcript coaching</li>
+</ul></div>
+<div class="mo should"><h4>SHOULD ◐</h4><ul>
+<li>proven-vs-attempted states</li><li>expired-doc ending</li><li>deny thank-you exit</li>
+</ul></div>
+<div class="mo could"><h4>COULD / WON'T ○</h4><p style="font-style:italic">empty — the session refused to pad the backlog. 🎯</p></div>
+</div>
+<div class="tnum" style="color:var(--gold);margin-top:2.2rem">user verdict · the clusters</div>
+<div class="clusters">
+<div class="cluster kept">① bedrock ✓ matters</div>
+<div class="cluster kept">② tree ✓ matters</div>
+<div class="cluster dropped">③ auto-capture ✕ dropped</div>
+<div class="cluster kept">④ voice-first ✓ matters</div>
+</div>
+<div class="contra">⚠️ <b>Honest contradiction, kept in the keepsake:</b> dropping cluster 3 (auto-capture) contradicts MoSCoW Musts — always auto-capture + post-capture confirm/retry. So auto-capture needs a <b>re-vote</b>… or it survives as a <i>mechanism under voice-first</i>, not its own direction. Unresolved on purpose.</div>
+<div class="templates">
+<div class="template"><b>📐 Template I —</b> the expired-doc ending (red blink · delete all · timeout/tab-close) is the <b>template for all unhappy endings</b>.</div>
+<div class="template"><b>📜 Template II —</b> proven-vs-attempted displays <b>through the transcript-as-proof-record</b> — bedrock truth ③ found its home.</div>
+</div>
+<p class="finale">“We came to plan a screen and left knowing the screen is the third most important thing on the screen.”<br><span style="font-size:.9rem;color:#55607a">— the moral of the evening, 2026-11-02</span></p>
+</div></section>
+<footer>Brainstorm keepsake · display IA for the user screen · First Principles · Decision Tree · Job to Be Done · Kill the Crown Jewel<br>Sole source: .memlog.md · rendered as one self-contained file · no pixels were harmed (except the coach card's)</footer>
+<script>
+var c=document.getElementById('wave'),x=c.getContext('2d'),t=0;
+(function draw(){x.clearRect(0,0,560,90);x.beginPath();for(var i=0;i<=560;i+=4){var a=Math.sin(i*.03+t)*18*Math.sin(i*.005+t*.6)+Math.sin(i*.11-t*1.4)*6;x.lineTo(i,45+a)}x.strokeStyle='#0e7a4e';x.lineWidth=2;x.shadowColor='#0e7a4e';x.shadowBlur=8;x.stroke();t+=.05;requestAnimationFrame(draw)})();
+var revs=document.querySelectorAll('.reveal');
+if(!('IntersectionObserver' in window)||(window.matchMedia&&matchMedia('(prefers-reduced-motion:reduce)').matches)){revs.forEach(function(el){el.classList.add('on')})}
+else{var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('on');io.unobserve(e.target)}})},{threshold:.08});revs.forEach(function(el){el.classList.add('will');io.observe(el)})}
+document.querySelectorAll('.station').forEach(function(s){s.addEventListener('mouseenter',function(){document.querySelectorAll('.station').forEach(function(o){o.classList.remove('live')});s.classList.add('live')})});
+document.querySelectorAll('.stratum').forEach(function(s){s.addEventListener('click',function(){s.style.filter='brightness(1.5)';setTimeout(function(){s.style.filter=''},400})})});
+</script>
+</body>
+</html>
