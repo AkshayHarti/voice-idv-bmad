@@ -1,3 +1,33 @@
 - source_spec: none
   summary: Build the assistant concept (Capture surface plus telemetry/coach loop, UI generator plus panel schema, Halo reframe) with Goal 2 spec conformed to the Cerebral Valley rules PDF (SAM 3.1, Muse Image, Voice Transcribe, Wonder, Glimmer/Spark Open as run-weights).
   evidence: split from Aria-naming intent at step-01 scope gate; independently shippable, deferred per user lock on Goal 1.
+- source_spec: `_bmad-output/implementation-artifacts/spec-goal-2-assistant-concept.md`
+  summary: Correct Meta model pins per Rev 2 §11 (sam-3-1, Muse Image art role, Glimmer local core, provisional Wonder/Transcribe) with consumers, pricing, script rename, and pin tests.
+  evidence: split from Goal 2 spec at step-02 token gate; independently shippable, no page/flow dependency.
+- source_spec: `_bmad-output/implementation-artifacts/spec-goal-2-assistant-concept.md`
+  summary: Feed capture-layer inputs (persistent-fault counters, moiré flag) into the fraud matrix per Rev 2 §7 with the tier rule unchanged.
+  evidence: split from Goal 2 spec at step-02 token gate; consumes the telemetry counters the surfaces build emits.
+- source_spec: `_bmad-output/implementation-artifacts/spec-goal-2-assistant-concept.md`
+  summary: Run the manual on-device lock acceptance (flash plus haptic plus spoken confirm, deny parks) as the gate for the Capture surface.
+  evidence: review found the page suite cannot observe the announceLock call site and no browser harness exists to execute it.
+- source_spec: `_bmad-output/implementation-artifacts/spec-goal-2-assistant-concept.md`
+  summary: Fire a fresh instruct Turn when the DL-back auto-park parks at awaiting_doc_back instead of keeping the stale front Turn.
+  evidence: review found backMissing auto-park predates Goal 2 with a stale last_turn that generated panels now render.
+- source_spec: `_bmad-output/implementation-artifacts/spec-friendlier-voice.md`
+  summary: Add the auto-capture re-vote banner to brainstorm.html so the keepsake alone cannot mislead an implementer.
+  evidence: review found the keepsake declares AUTO-CAPTURE ALWAYS decided while the intent doc records cluster 3 dropped with re-vote open.
+- source_spec: `_bmad-output/implementation-artifacts/spec-mic-unavailable.md`
+  summary: Correct the spec Intent to match the implemented never-latch policy for permission and device errors.
+  evidence: review found the frozen text says device/permission loss parks while the code parks only on 3x silence; frozen text cannot be edited in-run.
+- source_spec: `_bmad-output/implementation-artifacts/spec-mic-unavailable.md`
+  summary: Post microphone failure mix (block/capture/silence counts) so it is observable like the capture counters.
+  evidence: review found mic failures emit no telemetry while sibling subsystems count theirs; new API surface, follow-up sized.
+- source_spec: `_bmad-output/implementation-artifacts/spec-human-capture-confirm.md`
+  summary: Confirm the suppressed-mode quality verdict reaches screen readers (it may flash past SR when self-voicing yields).
+  evidence: review maybe-false (medium if true); settle with the on-device VoiceOver/TalkBack pass, then specify a dwell or transcript-announcement rule if the verdict is lost.
+- source_spec: `_bmad-output/implementation-artifacts/spec-human-capture-confirm.md`
+  summary: Add executed DOM/speech-order coverage for the confirm-card lifecycle, verdict/echo ordering, and SR arbitration.
+  evidence: review found page tripwires are string-literal only; no browser harness exists and the on-device lock run is the stated manual gate.
+- source_spec: `_bmad-output/implementation-artifacts/spec-customer-view.md`
+  summary: Keep check evidence out of end-user API payloads, not just rendered HTML (step JSON still carries the full report; /api/run/:id serves fixture reports openly).
+  evidence: verification found the audience split is render-level per spec; true payload-hardening changes pinned API shapes and needs a spec-level decision.

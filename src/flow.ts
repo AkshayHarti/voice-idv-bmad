@@ -8,6 +8,10 @@
 // reaches the check/tier pipeline (fail-closed per Task 4 ruling).
 // Consumes `runChecks`, `decide` (Task 3), `verifyDVS` (Task 4),
 // `tier` (Task 4). Produces `startRun`, `say`, `signal`, 10-stage type.
+// Goal 2: every fired Turn carries its generated panel (Turn-bound UI);
+// unknown utterances in capture stages acknowledge-and-hold so the
+// typed-description alternative path functions without client-driven
+// advance; `camera_denied` parks capture stages with guidance.
 import { decide, runChecks } from "./checks.js";
 import type { Decision } from "./checks.js";
 import { loadFixture } from "./fixtures.js";
@@ -16,6 +20,8 @@ import { verifyDVS } from "./dvs.js";
 import { tier } from "./fraud.js";
 import type { TierResult } from "./fraud.js";
 import { coach } from "./telemetry.js";
+import { DEFAULT_LIMITATIONS, generatePanel } from "./panels.js";
+import type { Panel, PanelData } from "./panels.js";
 
 export type Stage =
   | "idle"
@@ -46,6 +52,8 @@ export type TurnKind =
 export interface Turn {
   kind: TurnKind;
   text: string;
+  /** Generated panel for this fired Turn (Goal 2, Turn-bound UI). */
+  panel?: Panel;
 }
 
 export interface FlowState {
@@ -61,32 +69,134 @@ export interface FlowState {
 
 export { coach };
 
-const CONSENT_TURN: Turn = {
-  kind: "consent",
-  text: "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.",
+/** Stages where the camera is (or should be) live. */
+export const CAPTURE_STAGES: ReadonlySet<Stage> = new Set([
+  "awaiting_doc_front",
+  "awaiting_doc_back",
+  "awaiting_challenge",
+  "awaiting_selfie",
+]);
+
+/**
+ * Attach the generated panel to a fired Turn. The panel always binds to
+ * this Turn kind + stage — panels for Turns that never fired are a bug.
+ */
+export function withPanel(turn: Turn, stage: Stage, data: PanelData = {}): Turn {
+  return {
+    ...turn,
+    panel: generatePanel(turn.kind, stage, {
+      ...data,
+      text: data.text ?? turn.text,
+    }),
+  };
+}
+
+const CONSENT_TEXT =
+  "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
+
+function consentTurn(): Turn {
+  return withPanel({ kind: "consent", text: CONSENT_TEXT }, "awaiting_consent");
+}
+
+/**
+ * Typed-description alternative: acknowledge the description and hold.
+ * Coaching color rotates across approved surface variants (front set is
+ * golden) so repeats never sound canned; the noun follows the stage so a
+ * hold on the back never says "front". Deterministic round-robin keyed by
+ * the last spoken hold — never random, never the same twice in a row.
+ */
+const HOLD_NOUN: Partial<Record<Stage, string>> = {
+  awaiting_doc_front: "front",
+  awaiting_doc_back: "back",
+  awaiting_challenge: "challenge",
+  awaiting_selfie: "selfie",
 };
 
-function instructTurn(fixtureId: string, which: "front" | "back"): Turn {
+function holdVariants(stage: Stage): readonly [string, string, string] {
+  const noun = HOLD_NOUN[stage] ?? "capture";
+  return [
+    `Still on the ${noun} — hold steady.`,
+    "With you, same capture. Hold there.",
+    "Stay with this one — nearly there.",
+  ];
+}
+
+/** Next hold variant for the stage: one past the last spoken, else first. */
+function nextHoldVariant(stage: Stage, lastText: string | undefined): string {
+  const variants = holdVariants(stage);
+  const idx = lastText ? variants.indexOf(lastText) : -1;
+  return variants[(idx + 1) % variants.length];
+}
+
+/** Camera-denied park guidance: explains + names the stand-in path. */
+const CAMERA_DENIED_TEXT =
+  "I can't reach your camera, so this run is parked here. We'll use the stand-in capture path when you're ready — nothing moves on without a capture.";
+
+const CHALLENGE_TEXT =
+  "Look at the camera, turn your head slowly left… and back.";
+
+const SELFIE_TEXT = "Hold still for your selfie.";
+
+function instructTurn(
+  fixtureId: string,
+  which: "front" | "back",
+  stage: Stage,
+): Turn {
   if (which === "back") {
-    return {
-      kind: "instruct",
-      text: "Now flip the card over so I can grab your Card Number on the back.",
-    };
-  }
-  try {
-    if (loadFixture(fixtureId).kind === "au_passport") {
-      return {
+    return withPanel(
+      {
         kind: "instruct",
-        text: "Open to the photo page. I need the two-line code at the bottom fully visible.",
-      };
+        text: "Now flip the card over so I can grab your Card Number on the back.",
+      },
+      stage,
+    );
+  }
+  let hasBack = true;
+  try {
+    const kind = loadFixture(fixtureId).kind;
+    hasBack = kind !== "au_passport";
+    if (kind === "au_passport") {
+      return withPanel(
+        {
+          kind: "instruct",
+          text: "Open to the photo page. I need the two-line code at the bottom fully visible.",
+        },
+        stage,
+        { hasBack },
+      );
     }
   } catch {
     // Unknown fixture: fall through to the licence prompt.
   }
-  return {
-    kind: "instruct",
-    text: "Hold your licence up, front facing the camera. Fill the frame.",
-  };
+  return withPanel(
+    {
+      kind: "instruct",
+      text: "Hold your licence up, front facing the camera. Fill the frame.",
+    },
+    stage,
+    { hasBack },
+  );
+}
+
+/**
+ * Stage-appropriate re-instruct for a retake (stage unchanged). Doc stages
+ * reuse the capture prompts; challenge/selfie reuse their guidance lines.
+ */
+export function captureInstruct(s: FlowState): Turn {
+  switch (s.stage) {
+    case "awaiting_doc_back":
+      return instructTurn(s.fixture, "back", s.stage);
+    case "awaiting_challenge":
+      return withPanel({ kind: "instruct", text: CHALLENGE_TEXT }, s.stage);
+    case "awaiting_selfie":
+      return withPanel(
+        { kind: "instruct", text: "Hold still for your selfie." },
+        s.stage,
+      );
+    case "awaiting_doc_front":
+    default:
+      return instructTurn(s.fixture, "front", s.stage);
+  }
 }
 
 /** Deterministic keyword match; model only for `unknown` (out of slice). */
@@ -117,7 +227,7 @@ export function startRun(fixture: string): FlowState {
     fixture,
     stage: "awaiting_consent",
     last_intent: null,
-    last_turn: CONSENT_TURN,
+    last_turn: consentTurn(),
     capturesPurged: false,
     decision: null,
     tier: null,
@@ -139,28 +249,34 @@ export function say(s: FlowState, text: string): FlowState {
         return {
           ...base,
           stage: "awaiting_doc_front",
-          last_turn: instructTurn(s.fixture, "front"),
+          last_turn: instructTurn(s.fixture, "front", "awaiting_doc_front"),
         };
       }
-      return { ...base, last_turn: instructTurn(s.fixture, "front") };
+      return { ...base, last_turn: instructTurn(s.fixture, "front", s.stage) };
     case "deny":
       // Lightweight purge; full capture purge lands in Task 6 session API.
       return {
         ...base,
         stage: "idle",
         capturesPurged: true,
-        last_turn: {
-          kind: "abort_confirm",
-          text: "Okay — stopping here. Your captures are discarded. Say ready any time to start over.",
-        },
+        last_turn: withPanel(
+          {
+            kind: "abort_confirm",
+            text: "Okay — stopping here. Your captures are discarded. Say ready any time to start over.",
+          },
+          "idle",
+        ),
       };
     case "repeat":
       return {
         ...base,
-        last_turn: {
-          kind: "replay",
-          text: s.last_turn?.text ?? "Let me repeat that. Hold your document up to the camera.",
-        },
+        last_turn: withPanel(
+          {
+            kind: "replay",
+            text: s.last_turn?.text ?? "Let me repeat that. Hold your document up to the camera.",
+          },
+          s.stage,
+        ),
       };
     case "help": {
       // Context-aware: when the run is waiting on the back of the card,
@@ -169,16 +285,31 @@ export function say(s: FlowState, text: string): FlowState {
         s.stage === "awaiting_doc_back" || s.stage === "reading_back";
       return {
         ...base,
-        last_turn: instructTurn(s.fixture, needsBack ? "back" : "front"),
+        last_turn: instructTurn(s.fixture, needsBack ? "back" : "front", s.stage),
       };
     }
     case "unknown":
+      // Typed-description alternative path: in capture stages a description
+      // is acknowledged and the run holds (no advance, no pass) while
+      // telemetry coaching continues. Elsewhere keep the consent re-ask.
+      if (CAPTURE_STAGES.has(s.stage)) {
+        return {
+          ...base,
+          last_turn: withPanel(
+            { kind: "re-ask", text: nextHoldVariant(s.stage, s.last_turn?.text) },
+            s.stage,
+          ),
+        };
+      }
       return {
         ...base,
-        last_turn: {
-          kind: "re-ask",
-          text: "I didn't catch that. Say — I consent — to start, or ready when your card is in frame.",
-        },
+        last_turn: withPanel(
+          {
+            kind: "re-ask",
+            text: "I didn't catch that. Say — I consent — to start, or ready when your card is in frame.",
+          },
+          s.stage,
+        ),
       };
   }
 }
@@ -213,8 +344,43 @@ function enterComparing(s: FlowState): FlowState {
     stage: "comparing",
     decision,
     tier: tiered,
-    last_turn: { kind: "progress", text: "Checking your details now…" },
+    last_turn: withPanel(
+      { kind: "progress", text: "Checking your details now…" },
+      "comparing",
+    ),
   };
+}
+
+function rankOutcome(r: "pass" | "fail" | "inconclusive"): number {
+  if (r === "fail") return 0;
+  if (r === "inconclusive") return 1;
+  return 2;
+}
+
+/**
+ * Evidence binding for the decided panel. Re-runs the deterministic
+ * pipeline (same inputs as the report path, so the order matches
+ * `failedFirst` exactly); negligible cost, and the throw path is
+ * unreachable (decided implies a known-good fixture).
+ */
+function decidedData(s: FlowState): PanelData {
+  try {
+    const results = runChecks(buildMeasurements(s.fixture));
+    const decision = decide(results);
+    const dvs = verifyDVS({ fixture: s.fixture });
+    const tiered = tier(decision, dvs, [], { ocrConfidence: 1 });
+    return {
+      evidence: [...results].sort(
+        (a, b) => rankOutcome(a.result) - rankOutcome(b.result),
+      ),
+      verdict: decision,
+      tier: tiered.tier,
+      userMessage: tiered.userMessage,
+      limitations: [...DEFAULT_LIMITATIONS],
+    };
+  } catch {
+    return { evidence: [], verdict: s.decision ?? "not_verified" };
+  }
 }
 
 function resultTurn(s: FlowState): Turn {
@@ -233,18 +399,29 @@ function resultTurn(s: FlowState): Turn {
 /**
  * Handle one backend event. Only these signals advance Stage; speech
  * cannot. Unknown events and out-of-order events leave Stage unchanged.
+ * `camera_denied` parks capture stages with guidance (never advances).
  */
 export function signal(s: FlowState, ev: string): FlowState {
+  if (ev === "camera_denied") {
+    if (!CAPTURE_STAGES.has(s.stage)) return s;
+    return {
+      ...s,
+      last_turn: withPanel({ kind: "warn", text: CAMERA_DENIED_TEXT }, s.stage),
+    };
+  }
   switch (s.stage) {
     case "awaiting_doc_front":
       if (ev === "front_captured") {
         const reading: FlowState = {
           ...s,
           stage: "reading_front",
-          last_turn: {
-            kind: "progress",
-            text: "Good framing. Hold still one second… captured front.",
-          },
+          last_turn: withPanel(
+            {
+              kind: "progress",
+              text: "Good framing. Hold still one second…",
+            },
+            "reading_front",
+          ),
         };
         // Missing back: park at awaiting_doc_back; the tier pipeline is
         // unreachable from there (fail-closed, Task 4 ruling).
@@ -252,7 +429,7 @@ export function signal(s: FlowState, ev: string): FlowState {
           return {
             ...reading,
             stage: "awaiting_doc_back",
-            last_turn: instructTurn(s.fixture, "back"),
+            last_turn: instructTurn(s.fixture, "back", "awaiting_doc_back"),
           };
         }
         return reading;
@@ -264,17 +441,20 @@ export function signal(s: FlowState, ev: string): FlowState {
           return {
             ...s,
             stage: "awaiting_challenge",
-            last_turn: {
-              kind: "instruct",
-              text: "Look at the camera, turn your head slowly left… and back.",
-            },
+            last_turn: withPanel(
+              {
+                kind: "instruct",
+                text: CHALLENGE_TEXT,
+              },
+              "awaiting_challenge",
+            ),
           };
         }
         if (backMissing(s)) return { ...s, stage: "awaiting_doc_back" };
         return {
           ...s,
           stage: "awaiting_doc_back",
-          last_turn: instructTurn(s.fixture, "back"),
+          last_turn: instructTurn(s.fixture, "back", "awaiting_doc_back"),
         };
       }
       return s;
@@ -286,10 +466,13 @@ export function signal(s: FlowState, ev: string): FlowState {
         return {
           ...s,
           stage: "reading_back",
-          last_turn: {
-            kind: "progress",
-            text: "Got the back. Checking the Card Number…",
-          },
+          last_turn: withPanel(
+            {
+              kind: "progress",
+              text: "Got the back. Checking the Card Number…",
+            },
+            "reading_back",
+          ),
         };
       }
       return s;
@@ -298,10 +481,13 @@ export function signal(s: FlowState, ev: string): FlowState {
         return {
           ...s,
           stage: "awaiting_challenge",
-          last_turn: {
-            kind: "instruct",
-            text: "Look at the camera, turn your head slowly left… and back.",
-          },
+          last_turn: withPanel(
+            {
+              kind: "instruct",
+              text: CHALLENGE_TEXT,
+            },
+            "awaiting_challenge",
+          ),
         };
       }
       return s;
@@ -310,10 +496,13 @@ export function signal(s: FlowState, ev: string): FlowState {
         return {
           ...s,
           stage: "awaiting_selfie",
-          last_turn: {
-            kind: "instruct",
-            text: "Hold still for your selfie… captured.",
-          },
+          last_turn: withPanel(
+            {
+              kind: "instruct",
+              text: SELFIE_TEXT,
+            },
+            "awaiting_selfie",
+          ),
         };
       }
       return s;
@@ -322,7 +511,11 @@ export function signal(s: FlowState, ev: string): FlowState {
       return s;
     case "comparing":
       if (ev === "tier_done" || ev === "report_ready") {
-        return { ...s, stage: "decided", last_turn: resultTurn(s) };
+        return {
+          ...s,
+          stage: "decided",
+          last_turn: withPanel(resultTurn(s), "decided", decidedData(s)),
+        };
       }
       return s;
     case "decided":

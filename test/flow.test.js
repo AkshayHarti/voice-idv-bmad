@@ -53,13 +53,83 @@ test("missing-back run stays parked through say/signal noise; tier unreachable",
   assert.equal(d.decision, null);
 });
 
-test("coach counter >=3 closes out as re-ask/not_verified", () => {
+test("coach counter >=3 parks with warn + typed-description alternative", () => {
   const t = coach({ glare: 0.9, turns: 3 });
-  assert.equal(t.kind, "re-ask");
-  assert.match(t.text, /not verified/);
+  assert.equal(t.kind, "warn");
+  assert.match(t.text, /type a short description/);
+  assert.match(t.text, /parked/);
+  assert.doesNotMatch(t.text, /not verified/);
   const w = coach({ screenshot: true });
   assert.equal(w.kind, "warn");
   assert.match(w.text, /photo of a screen/);
+});
+
+test("unknown utterances in capture stages acknowledge-and-hold", () => {
+  let c = say(startRun("nsw-dl-clean"), "ready");
+  assert.equal(c.stage, "awaiting_doc_front");
+  const held = say(c, "it's a blue card with a hologram");
+  assert.equal(held.stage, "awaiting_doc_front");
+  assert.equal(held.last_intent, "unknown");
+  assert.equal(held.last_turn.kind, "re-ask");
+  assert.equal(held.last_turn.text, "Still on the front — hold steady.");
+  // Consent/idle stages keep the consent-oriented re-ask.
+  const idle = say(startRun("nsw-dl-clean"), "blah blah");
+  assert.match(idle.last_turn.text, /I consent/);
+});
+
+test("hold lines rotate across repeats, never the same twice in a row", () => {
+  let c = say(startRun("nsw-dl-clean"), "ready");
+  const first = say(c, "blah one").last_turn.text;
+  const second = say(say(c, "blah one"), "blah two").last_turn.text;
+  const third = say(say(say(c, "blah one"), "blah two"), "blah three").last_turn.text;
+  assert.equal(first, "Still on the front — hold steady.");
+  assert.equal(second, "With you, same capture. Hold there.");
+  assert.equal(third, "Stay with this one — nearly there.");
+  assert.notEqual(first, second);
+  assert.notEqual(second, third);
+  // The noun follows the stage: a hold on the back never says "front".
+  let d = say(startRun("nsw-dl-clean"), "ready");
+  d = signal(d, "front_captured");
+  d = signal(d, "frames_done");
+  assert.equal(d.stage, "awaiting_doc_back");
+  const backHold = say(d, "blah").last_turn.text;
+  assert.equal(backHold, "Still on the back — hold steady.");
+  assert.doesNotMatch(backHold, /front/);
+  // Face-stage nouns and 4th-repeat wrap back to variant 1.
+  let ch = say(startRun("nsw-dl-clean"), "ready");
+  for (const ev of ["front_captured", "frames_done", "back_captured", "frames_done"]) {
+    ch = signal(ch, ev);
+  }
+  assert.equal(ch.stage, "awaiting_challenge");
+  assert.equal(say(ch, "blah").last_turn.text, "Still on the challenge — hold steady.");
+  const se = signal(ch, "challenge_done");
+  assert.equal(se.stage, "awaiting_selfie");
+  assert.equal(say(se, "blah").last_turn.text, "Still on the selfie — hold steady.");
+  const fourth = say(say(say(say(c, "blah one"), "blah two"), "blah three"), "blah four").last_turn.text;
+  assert.equal(fourth, "Still on the front — hold steady.");
+});
+
+test("camera_denied parks capture stages with warn guidance, ignores others", () => {
+  let c = say(startRun("nsw-dl-clean"), "ready");
+  const parked = signal(c, "camera_denied");
+  assert.equal(parked.stage, "awaiting_doc_front");
+  assert.equal(parked.last_turn.kind, "warn");
+  assert.match(parked.last_turn.text, /parked/);
+  assert.match(parked.last_turn.text, /stand-in/);
+  const idle = signal(startRun("nsw-dl-clean"), "camera_denied");
+  assert.equal(idle.stage, "awaiting_consent");
+  assert.equal(idle.last_turn.kind, "consent");
+});
+
+test("every fired Turn carries its generated panel", () => {
+  let c = say(startRun("nsw-dl-clean"), "ready");
+  assert.equal(c.last_turn.panel.primitive, "progress-steps");
+  c = signal(c, "front_captured");
+  assert.equal(c.last_turn.panel.primitive, "progress-steps");
+  const held = say(c, "um, the card is bent");
+  assert.equal(held.stage, "reading_front");
+  const denied = say(startRun("nsw-dl-clean"), "no, stop");
+  assert.equal(denied.last_turn.panel.primitive, "choice-list");
 });
 
 test("deny purges captures and aborts to idle", () => {

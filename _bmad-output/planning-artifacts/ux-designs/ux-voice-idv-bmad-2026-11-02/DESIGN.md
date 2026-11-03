@@ -39,6 +39,11 @@ typography:
     fontSize: 13px
     fontWeight: '400'
     lineHeight: '1.5'
+  verdict:
+    fontFamily: 'ui-sans-serif, system-ui, sans-serif'
+    fontSize: 30px
+    fontWeight: '600'
+    lineHeight: '1.2'
 rounded:
   sm: 6px
   md: 10px
@@ -67,6 +72,11 @@ components:
     background: '{colors.surface-raised}'
     border: '{colors.border-hairline}'
     radius: '{rounded.md}'
+  confirm-card:
+    background: '{colors.surface-raised}'
+    border: '{colors.border-hairline}'
+    radius: '{rounded.md}'
+    image-radius: '{rounded.sm}'
   spoken-line:
     text: '{colors.ink-primary}'
     size: '{typography.spoken.fontSize}'
@@ -88,8 +98,10 @@ Halo is the visual identity of a voice assistant that verifies identity — not 
 - **Raised (`#12161D`) / Overlay (`#1A2130`)** lift panels and sheets by tone only. No shadows for hierarchy on the base surface.
 - **Voice sky (`#7DD3FC`)** means *the assistant is alive*: orb pulse while listening/speaking, the active transcript line's edge. Never used for state (pass/fail) or decoration.
 - **Frame blue (`#38BDF8`)** draws capture guides: document quad corners, face oval, alignment rails. Turns `{colors.signal-ok}` only when a capture locks.
-- **Signal green / amber / red** carry the demo's existing verdict semantics: ok `#4ADE80`, warn `#FBBF24`, fail `#F87171`. Reserved strictly for check results, decisions, and capture diagnostics — never for brand or voice.
+- **Signal green / amber / red** carry the demo's existing verdict semantics (`src/index.ts`, served at `/page`): ok `#4ADE80`, warn `#FBBF24`, fail `#F87171`. Reserved strictly for check results, decisions, and capture diagnostics — never for brand or voice.
 - **Hairline (`#222B3A`)** separates evidence rows and transcript turns at the lowest legible contrast.
+
+Contrast: load-bearing pairs target WCAG AA — ink-primary/secondary on base/raised, meta caps, evidence mono, and verdict hues (4.5:1 text, 3:1 large/UI); measured values pending verification [ASSUMPTION].
 
 Avoid: light mode (Halo is dark-first; [ASSUMPTION] no light theme for v1), chromatic voice colors (voice is always sky), red/green anywhere except verdicts and capture lock.
 
@@ -101,7 +113,7 @@ System font stacks throughout (no webfont dependency — the demo must run offli
 
 ## Layout & Spacing
 
-4-based scale (4–48px). One-column reading surface, max width 56rem, 24px page margins on mobile. The Assistant surface stacks: orb + spoken line (top, sticky), generated panel (middle), transcript (scrolling history below). The Capture surface is full-bleed camera with the frame overlay and a bottom coach card; the spoken line docks above the coach card so guidance and viewfinder share one glance.
+4-based scale (4–48px). One-column reading surface, max width 56rem, 24px page margins on mobile. The Assistant surface stacks: orb + spoken line (top, sticky), generated panel (middle), transcript (scrolling history below). The Capture surface is full-bleed camera with the frame overlay and a bottom coach card; the spoken line docks above the coach card so guidance and viewfinder share one glance. On the single-page realization the capture frame **docks at the chat**: at capture start the frame node moves to the dock zone above the Listen/input row and the view follows it — the viewfinder meets the user where they are, never stranded at the page top while they chat at the bottom. It returns home when the stage closes. (See `.working/capture-placement-compare.html`: C chosen, A/B rejected.)
 
 Panels the assistant generates slot into the middle region only — they never move the orb, the spoken line, or the capture frame. Generated content inherits page margins; camera overlays are the sole full-bleed exception.
 
@@ -111,18 +123,20 @@ Tonal layering, not shadows: base → raised → overlay. The coach card and gen
 
 ## Shapes
 
-`rounded/md` (10px) for cards, panels, and coach cards. `rounded/lg` (16px) for the camera frame container and sheets. `rounded/sm` (6px) for chips, inputs, and small controls. `rounded/full` belongs to the voice orb and status dots only — no pill buttons. Capture guide corners are square-cut brackets (viewfinder language), not rounded — precision reads sharper.
+`rounded/md` (10px) for cards, panels, and coach cards. `rounded/lg` (16px) for the camera frame container and sheets. `rounded/sm` (6px) for chips, inputs, and small controls. `rounded/full` belongs to the voice orb only — no pill buttons. Capture guide corners are square-cut brackets (viewfinder language), not rounded — precision reads sharper.
 
 ## Components
 
-- **Voice orb** — the assistant's face. Idle: faint ring. Listening/speaking: sky pulse synced to audio energy (static glow under reduced motion). Tap toggles mute; long-press reserved for system use.
-- **Spoken line** — current utterance in `{typography.spoken}`. Updates per Turn; the previous line collapses into the transcript. Never shows two live lines at once.
-- **Capture frame** — full-bleed camera with guide overlay: corner brackets for documents, oval for faces, rails for alignment. Guides render `{colors.frame-guide}`; on lock they flash `{colors.signal-ok}` once and hold. Haptic tick on lock where available.
+- **Voice orb** — the assistant's face (≥44pt). Idle: faint ring. Listening/speaking: sky pulse synced to audio energy (static glow under reduced motion). Tap toggles mute; long-press reserved for system use with a documented accessible path.
+- **Spoken line** — current utterance in `{typography.spoken.fontSize}` at `{typography.spoken.fontWeight}`. Updates per Turn; the previous line collapses into the transcript. Never shows two live lines at once.
+- **Capture frame** — full-bleed camera with guide overlay: corner brackets for documents, oval for faces, rails for alignment. Guides render `{colors.frame-guide}` (amber `{colors.signal-warn}` during warn turns); on lock they flash `{colors.signal-ok}` once, gain check-ticks, and hold, while the meta label flips `capturing…` → `locked`. Haptic tick on lock where available. Docked at the chat on capture start (see Layout & Spacing); docking animates opacity/position only — instant under reduced motion, still announced — guides never re-lay-out mid-capture.
 - **Coach card** — one coaching instruction at a time (`surface-raised`, hairline border): short imperative + optional diagram slot. Replaces, never stacks — a new instruction retires the old.
+- **Confirm card** — post-lock review in the dock (see `.working/confirm-card-mock.html`): the captured image at card width (`rounded/sm`, `alt=""` decorative), a caption carrying the quality verdict, and the Keep / Retake pair. Same tonal treatment as the coach card; the image is the only photography on the surface. Retires on keep/retake — never persists beside the next stage.
 - **Generated panel** — assistant-assembled UI for the current Turn (field confirmations, retake options, progress). Middle region only; composed from primitives in `EXPERIENCE.md` Component Patterns. Must always include a text equivalent of any choice it presents.
 - **Transcript turn** — history rows: speaker label in `meta`, text in `body`. System turns carry a left edge tick; sky tick marks the most recent.
-- **Decision banner** — verdict in 30px semibold, verdict-hued. Followed by tier message, failures-first evidence list in `evidence` type, limitations block, and the Attack Surface panel.
-- **Consent gate** — full-surface sheet before any capture: purpose statement, what is captured, spoken-consent prompt. No pre-checked anything; deny path as prominent as consent.
+- **Typed input / Listen row** — the guaranteed channel: text input (`rounded/sm`, overlay fill) with the Listen status line above; placeholder names the voice-unavailable path. The dock zone sits directly above it. ≥44pt targets, ≥8px gaps.
+- **Decision banner** — verdict in `{typography.verdict.fontSize}` (`{typography.verdict.fontWeight}`), verdict-hued. Followed by tier message, failures-first evidence list in `evidence` type, limitations block, and the Attack Surface panel (explicit Run control; on demand only).
+- **Consent gate** — full-surface sheet before any capture: purpose statement, what is captured, spoken-consent prompt. No pre-checked anything; deny path as prominent as consent. Abort confirm reuses this sheet with purge copy.
 
 ## Do's and Don'ts
 
@@ -132,6 +146,9 @@ Tonal layering, not shadows: base → raised → overlay. The coach card and gen
 | Voice sky for aliveness only; verdict hues for verdicts only | Sky pass/fail badges, green/red voice states |
 | One coach card, replaced per instruction | Stacked coaching tips or persistent hint bars |
 | Generated panels in the middle region from approved primitives | Assistant-invented surfaces, nav, or chrome |
+| Frame docks at the chat on capture start | Frame stranded at page top while the user chats at the bottom |
+| Show the capture in a confirm card before keep/retake | Blind keep/retake judged from memory |
+| Rotate repeats across approved variants | The same sentence twice in a row |
 | Static glow + haptics under reduced motion | Pulsing orb, flashing frame, animated gradients |
 | Mono evidence type on Decision only | Mono body copy elsewhere |
 | Dark-first console, tonal layering | Light theme, drop-shadow hierarchy, decorative gradients |

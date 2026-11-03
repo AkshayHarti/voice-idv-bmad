@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capture frame placement — 3 options</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0B0E13;color:#EDEFF4;font-family:Georgia,serif;padding:2rem 1rem}
+  header{max-width:1100px;margin:0 auto 2rem;text-align:center}
+  header .kicker{font-family:-apple-system,sans-serif;font-size:.7rem;letter-spacing:.3em;text-transform:uppercase;color:#7DD3FC}
+  header h1{font-size:clamp(1.6rem,4vw,2.4rem);font-style:italic;margin:.5rem 0}
+  header p{color:#9AA3B2;max-width:62ch;margin:0 auto;font-size:.95rem}
+  .row{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:1.2rem}
+  @media(max-width:900px){.row{grid-template-columns:1fr;max-width:420px}}
+  .opt h2{font-size:1.15rem;margin-bottom:.2rem}
+  .opt h2 .tag{font-family:-apple-system,sans-serif;font-size:.65rem;letter-spacing:.15em;color:#0B0E13;background:#7DD3FC;border-radius:99px;padding:.15rem .6rem;vertical-align:middle;margin-left:.4rem}
+  .opt>p{color:#9AA3B2;font-size:.82rem;margin-bottom:.8rem;min-height:2.6em}
+  .phone{border:1px solid #222B3A;border-radius:18px;overflow:hidden;background:#0B0E13;display:flex;flex-direction:column;height:520px}
+  .screen{flex:1;overflow-y:auto;padding:.9rem;scroll-behavior:smooth}
+  .turn{margin:.4rem 0;font-size:.8rem;line-height:1.45}
+  .turn b{display:block;font-family:-apple-system,sans-serif;font-size:.62rem;letter-spacing:.2em;color:#5B6472}
+  .turn.you{text-align:right}
+  .turn.you b{color:#5B6472}
+  .frame{border:2px solid #38BDF8;border-radius:12px;padding:1.6rem 1rem;text-align:center;margin:.7rem 0;background:radial-gradient(ellipse at 50% 0%,#38BDF822,transparent 70%)}
+  .frame .corner{font-size:1.6rem;color:#38BDF8}
+  .frame p{font-family:-apple-system,sans-serif;font-size:.72rem;color:#9AA3B2;margin-top:.4rem}
+  .frame.locked{border-color:#4ADE80;box-shadow:0 0 24px #4ADE8044}
+  .frame.locked .corner{color:#4ADE80}
+  .stickyopt .frame{position:sticky;top:0;z-index:2;background:#0e1622}
+  .controls{border-top:1px solid #222B3A;padding:.7rem;display:flex;gap:.5rem}
+  .controls button{flex:1;background:#1A2130;color:#EDEFF4;border:1px solid #222B3A;border-radius:10px;padding:.55rem;font-size:.75rem;cursor:pointer;font-family:-apple-system,sans-serif}
+  .controls button.primary{background:#7DD3FC;border-color:#7DD3FC;color:#0B0E13;font-weight:700}
+  .note{font-family:-apple-system,sans-serif;font-size:.68rem;color:#5B6472;margin-top:.5rem;min-height:2.2em}
+  .dockzone{border:1px dashed #222B3A;border-radius:10px;margin:.5rem 0;min-height:0}
+  .dockzone:empty::after{content:"";display:block}
+</style>
+</head>
+<body>
+<header>
+  <div class="kicker">Capture placement · visual comparison</div>
+  <h1>Where does the frame meet the user?</h1>
+  <p>Each phone is live: scroll the chat down, then press <b>Start capture</b> to feel the option. The scenario is identical in all three — only placement differs.</p>
+</header>
+<div class="row">
+
+  <div class="opt">
+    <h2>A · Scroll into view <span class="tag" style="background:#F87171">REJECTED</span></h2>
+    <p>Frame lives at top; the view glides to it when capture starts.</p>
+    <div class="phone"><div class="screen" id="sA"></div>
+      <div class="controls"><button class="primary" data-sim="A">Start capture</button><button data-reset="A">Reset</button></div>
+    </div>
+    <div class="note" id="nA"></div>
+  </div>
+
+  <div class="opt">
+    <h2>B · Sticky frame</h2>
+    <p>Frame pins to the viewport top for the whole capture stage.</p>
+    <div class="phone stickyopt"><div class="screen" id="sB"></div>
+      <div class="controls"><button class="primary" data-sim="B">Start capture</button><button data-reset="B">Reset</button></div>
+    </div>
+    <div class="note" id="nB"></div>
+  </div>
+
+  <div class="opt">
+    <h2>C · Docked at chat <span class="tag">CHOSEN</span></h2>
+    <p>Capture UI moves down and docks above the input on start.</p>
+    <div class="phone"><div class="screen" id="sC"></div>
+      <div class="controls"><button class="primary" data-sim="C">Start capture</button><button data-reset="C">Reset</button></div>
+    </div>
+    <div class="note" id="nC"></div>
+  </div>
+
+</div>
+<script>
+const CHAT = [
+  ['aria', "I'm Aria. I'll guide you by voice to verify your ID."],
+  ['you', 'I consent'],
+  ['aria', "Thanks — have your licence ready."],
+  ['you', 'Ready'],
+  ['aria', 'Great. We start with the front of the card.'],
+];
+function frameHTML(id) {
+  return `<div class="frame" id="${id}"><div class="corner">⌐</div><p>VIEWFINDER · document front</p></div>`;
+}
+function chatHTML() {
+  return CHAT.map(([w, t]) =>
+    `<div class="turn${w === 'you' ? ' you' : ''}"><b>${w === 'you' ? 'YOU' : 'ARIA'}</b>${t}</div>`
+  ).join('');
+}
+function build(which) {
+  const s = document.getElementById('s' + which);
+  if (which === 'C') {
+    s.innerHTML = chatHTML() + `<div id="frameC-home"></div>` + `<div class="dockzone" id="dockC"></div>`;
+    document.getElementById('frameC-home').outerHTML = frameHTML('frameC');
+  } else {
+    s.innerHTML = frameHTML('frame' + which) + chatHTML();
+  }
+  s.scrollTop = s.scrollHeight; // user is down at the chat, as in the real bug
+  document.getElementById('n' + which).textContent = '';
+}
+function simulate(which) {
+  const f = document.getElementById('frame' + which);
+  const n = document.getElementById('n' + which);
+  if (which === 'A') {
+    f.classList.add('locked');
+    f.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    n.textContent = '✓ View glides up to the frame. Transcript stays where it was.';
+  }
+  if (which === 'B') {
+    f.classList.add('locked');
+    document.getElementById('sB').scrollTop = 0;
+    n.textContent = '✓ Frame was already pinned at top; view snaps to it.';
+  }
+  if (which === 'C') {
+    const dock = document.getElementById('dockC');
+    dock.appendChild(f);
+    f.classList.add('locked');
+    f.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    n.textContent = '✓ Frame node moved down and docked above the input.';
+  }
+}
+document.querySelectorAll('[data-sim]').forEach(b => b.onclick = () => simulate(b.dataset.sim));
+document.querySelectorAll('[data-reset]').forEach(b => b.onclick = () => build(b.dataset.reset));
+build('A'); build('B'); build('C');
+</script>
+</body>
+</html>
