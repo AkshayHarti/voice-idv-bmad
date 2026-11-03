@@ -384,7 +384,7 @@ const RETAKE_UTTERANCE = /^\s*(retake|take (it |that )?again)\s*\.?\s*$/i;
  * Bare command plus natural please/it-now wrappers; anchored so negations
  * ("don't lock now") never match and still read as deny first.
  */
-const LOCK_NOW_UTTERANCE =
+export const LOCK_NOW_UTTERANCE =
   /^\s*(please\s+)?lock(\s+it(\s+now)?|\s+now(\s+please)?|\s+this)?(\s+please)?\s*\.?\s*$/i;
 
 /** Near-miss targets: the same closed pair phrasing, typo-tolerant. */
@@ -2445,6 +2445,20 @@ async function drive(step) {
  * Armed (commands veto via respond; silence still never re-asks — stillness
  * is the answer). Never runs behind an open pair or past the stage.
  */
+// Restart backoff: a persistent recognizer error must not spin hot
+// recognizers — after 3 errors inside 5 s, wait 2 s before retrying.
+let listenerErrors = 0;
+let listenerErrorAt = 0;
+function restartCaptureListener() {
+  const now = Date.now();
+  listenerErrors = now - listenerErrorAt < 5000 ? listenerErrors + 1 : 1;
+  listenerErrorAt = now;
+  if (listenerErrors > 3) {
+    setTimeout(() => { listenerErrors = 0; startCaptureListener(); }, 2000);
+    return;
+  }
+  startCaptureListener();
+}
 function startCaptureListener() {
   if (!SR || micParked || sampling !== true) return;
   if (captureStage === null || !CAPTURE_SIGNAL[captureStage]) return;
@@ -2467,6 +2481,7 @@ function startCaptureListener() {
     settled = true;
     const heard = (event.results[0][0].transcript || '').trim();
     stopCaptureListener();
+    listenerErrors = 0;   // heard speech: the mic demonstrably works
     if (captureStage !== recStage || sampling !== true) return;
     if (LOCK_NOW_HEARD.test(heard) || WAIT_HEARD.test(heard)) respond(heard);
     else startCaptureListener();
@@ -2479,12 +2494,13 @@ function startCaptureListener() {
     stopCaptureListener();
     // The turn listener owns mic parks and remedies; a dead mic here just
     // ends listening (typed carries the turn), anything else restarts.
-    if (!fatal) startCaptureListener();
+    if (!fatal) restartCaptureListener();
   };
   rec.onend = () => {
     if (settled) return;
     settled = true;
     stopCaptureListener();
+    listenerErrors = 0;   // clean end (watchdog silence stop): no error debt
     startCaptureListener();
   };
   try { rec.start(); } catch { stopCaptureListener(); }

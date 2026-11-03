@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import app from "../dist/index.js";
-import { AUTO_CAPTURE_BEAT } from "../dist/flow.js";
+import app, { LOCK_NOW_UTTERANCE } from "../dist/index.js";
+import { AUTO_CAPTURE_BEAT, matchIntent } from "../dist/flow.js";
 
 // Goal 2 page structure: Halo tokens, assistant surfaces, capture loop
 // wiring. Source-literal assertions (no browser harness exists); the
@@ -162,12 +162,31 @@ test("auto-capture arms on the clean run with a fixed beat and vetoes", async ()
   assert.ok(html.includes("FIRE_VETO_OFFER"), "fire-veto loop has a spoken escape");
   assert.ok(html.includes("one missed tick, never a dead loop"), "failed peek never sticks the sampler");
   assert.ok(html.includes("err.status === 409 || err.status === 404"), "expired sessions keep Lock disabled");
+  assert.ok(html.includes("restartCaptureListener"), "recognizer restarts back off on persistent errors");
   assert.ok(html.includes("prevLuma"), "motion baseline across samples");
   assert.ok(html.includes("MOTION_THRESHOLD"), "motion veto threshold");
   assert.ok(html.includes("LOCK_NOW_HEARD"), "lock-now command words");
   assert.ok(html.includes("voiceLock"), "voice locks share the confirm landing");
   assert.ok(html.includes("tickArm === armGen"), "mid-flight vetoes retire stale ticks");
   assert.ok(html.includes("Lock ' + CAPTURE_SHORT[stage]"), "Lock naming carries the stage");
+});
+
+test("client and server command matchers agree on the lock/wait vocabulary", async () => {
+  const html = await getPage();
+  const lockHeard = eval(html.match(/const LOCK_NOW_HEARD = (\/.*?\/i);/)[1]);
+  const waitHeard = eval(html.match(/const WAIT_HEARD = (\/.*?\/i);/)[1]);
+  for (const s of ["lock", "lock it", "lock now", "lock this", "lock it now", "lock now please", "please lock now"]) {
+    assert.ok(LOCK_NOW_UTTERANCE.test(s), `server must fire on ${s}`);
+    assert.ok(lockHeard.test(s), `client must hear ${s}`);
+  }
+  for (const s of ["locker", "unlock now", "don't lock now"]) {
+    assert.ok(!LOCK_NOW_UTTERANCE.test(s), `server must ignore ${s}`);
+    assert.ok(!lockHeard.test(s), `client must ignore ${s}`);
+  }
+  for (const s of ["wait", "hold on", "hold off"]) {
+    assert.equal(matchIntent(s), "wait", `server must veto on ${s}`);
+    assert.ok(waitHeard.test(s), `client must hear ${s}`);
+  }
 });
 
 test("confirm card shows the snapshot with a verdict caption and the pair", async () => {
