@@ -224,6 +224,10 @@ interface Session {
   ocrByCapture: Record<string, OcrFields>;
   /** Fields extracted for the pending lock; kept or discarded with the ref. */
   pendingOcr: OcrFields | null;
+  /** OCR attempts used on the current stage (loop economics). */
+  ocrAttempts: number;
+  /** Stage the attempt counter belongs to (stale keys restart it). */
+  ocrAttemptsStage: string | null;
   captureSeq: number;
   /** Consecutive arm-clean samples this stage (drives auto-capture arming). */
   cleanStreak: number;
@@ -241,6 +245,10 @@ interface Session {
 
 /** Telemetry samples without an arm (~12 s at 5 Hz) before the proactive Lock offer. */
 export const OFFER_AFTER_SAMPLES = 60;
+/** OCR attempts per stage before locks fall back (loop economics, demo-grade). */
+export const OCR_ATTEMPTS_PER_STAGE = 3;
+/** Lock crops must be real image payloads: MIME allowlist + base64 floor. */
+const CROP_PATTERN = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]{100,}$/;
 /** Max gap between clean samples (2x the 200 ms cadence) that still extends the run. */
 export const STREAK_FRESH_MS = 400;
 
@@ -270,6 +278,8 @@ function purgeCaptures(session: Session): void {
   session.pendingVerdict = null;
   session.ocrByCapture = {};
   session.pendingOcr = null;
+  session.ocrAttempts = 0;
+  session.ocrAttemptsStage = null;
   resultTokens.delete(session.resultToken);
   session.faultCounts = zeroFaultCounts();
   session.lastCoachText = null;
@@ -307,6 +317,8 @@ function newSession(fixtureId: string): Session {
     pendingVerdict: null,
     ocrByCapture: {},
     pendingOcr: null,
+    ocrAttempts: 0,
+    ocrAttemptsStage: null,
     captureSeq: 0,
     cleanStreak: 0,
     lastCleanAt: null,
@@ -1148,13 +1160,25 @@ async function performLock(
       ? isDocSide
       : null;
   const stageAtLock = session.flow.stage;
-  if (ocrSide !== null && typeof crop === "string" && crop.length > 0) {
-    if (crop.length <= MAX_CROP_CHARS && crop.startsWith("data:image/")) {
-      try {
-        const ocr = await ocrCrop(
-          { side: ocrSide, imageBase64: crop },
-          { env: processEnv() },
-        );
+  // Attempt budget: OCR tries are capped per stage (keyed by stage so
+  // advances restart it); locks past the budget succeed on fallback.
+  // Demo-grade loop economics — global limiting belongs at deployment.
+  if (session.ocrAttemptsStage !== session.flow.stage) {
+    session.ocrAttemptsStage = session.flow.stage;
+    session.ocrAttempts = 0;
+  }
+  const cropOk =
+    ocrSide !== null &&
+    typeof crop === "string" &&
+    crop.length <= MAX_CROP_CHARS &&
+    CROP_PATTERN.test(crop);
+  if (ocrSide !== null && cropOk && session.ocrAttempts < OCR_ATTEMPTS_PER_STAGE) {
+    session.ocrAttempts += 1;
+    try {
+      const ocr = await ocrCrop(
+        { side: ocrSide, imageBase64: crop },
+        { env: processEnv() },
+      );
         // Staleness guard: a keep/retake/deny/signal that landed during the
         // await owns the state now — abandon the lock turn. But a kept ref
         // was legitimately kept: attach the read to it instead of burning a
@@ -1173,8 +1197,7 @@ async function performLock(
       } catch {
         // ocrCrop never throws by contract; the lock lands regardless.
       }
-    }
-    // Oversize/non-image crops: OCR skipped, lock succeeds (labeled fallback).
+    // Invalid/oversize/capped crops: OCR skipped, lock succeeds (labeled fallback).
   }
   // Verdict turn first, then the fixed keep/retake question: two separate
   // turns, so the non-visual review path hears quality before the choice.

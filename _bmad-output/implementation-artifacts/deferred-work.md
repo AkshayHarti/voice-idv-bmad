@@ -55,3 +55,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-doc-ocr.md`
   summary: Cover the client takeCrop flow with executing verification (DOM/canvas harness) instead of source-text pins.
   evidence: review verified a runtime-broken takeCrop stays green while all live locks silently degrade to fixture fallback; no harness precedent exists in the repo.
+- source_spec: `_bmad-output/implementation-artifacts/spec-doc-ocr.md`
+  summary: Add global rate limiting (per-IP/per-key lock and session-mint caps) at deployment; per-stage OCR attempt caps only bound single sessions.
+  evidence: party elicitation confirmed open session mint + per-session-only caps still allow multi-session spend loops once hosted publicly.

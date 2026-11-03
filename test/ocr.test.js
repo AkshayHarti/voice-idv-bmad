@@ -62,6 +62,8 @@ function stubWonder(text, seen = null) {
   };
 }
 
+const PIXELS = "A".repeat(120);
+
 const FRONT_JSON = JSON.stringify({
   licence_number: "W1234567",
   full_name: "ALEX JORDAN CITIZEN",
@@ -101,7 +103,7 @@ async function withKeyedMeta(fn, { wonderImpl = null, seen = null } = {}) {
 test("ocrCrop: Meta-first extraction parses DL JSON, drops unknown keys", async () => {
   const before = SPEND_LEDGER.length;
   const res = await ocrCrop(
-    { side: "front", imageBase64: "data:image/jpeg;base64,AAA" },
+    { side: "front", imageBase64: "data:image/jpeg;base64," + PIXELS },
     { env: { META_API_KEY: "test" }, fetcher: stubWonder(`Here you go:\n${FRONT_JSON}\n`) },
   );
   assert.equal(res.provider, "meta");
@@ -158,7 +160,7 @@ test("HAPPY OCR: locked crops render redacted on the customer twins", async () =
     const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
     const id = created.body.sessionId;
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
-    const crop = "data:image/jpeg;base64,CROPMARKERHAPPY";
+    const crop = "data:image/jpeg;base64,CROPMARKERHAPPY" + PIXELS;
     const front = await post(`/api/session/${id}/lock`, { crop });
     assert.equal(front.status, 200);
     assert.equal(front.body.panel.primitive, "retake-pair");
@@ -239,7 +241,7 @@ test("locks never 4xx for OCR: oversize, Meta failure, and non-doc locks", async
     const failing = await post("/api/session", { fixtureId: "nsw-dl-clean" });
     const fid = failing.body.sessionId;
     await post(`/api/session/${fid}/say`, { utterance: "I consent" });
-    const locked = await post(`/api/session/${fid}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    const locked = await post(`/api/session/${fid}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     assert.equal(locked.status, 200);
     assert.equal(locked.body.panel.primitive, "retake-pair");
   }, {
@@ -255,7 +257,7 @@ test("locks never 4xx for OCR: oversize, Meta failure, and non-doc locks", async
     await post(`/api/session/${sid}/signal`, { event: "frames_done" });
     await post(`/api/session/${sid}/signal`, { event: "back_captured" });
     await post(`/api/session/${sid}/signal`, { event: "frames_done" });
-    const selfie = await post(`/api/session/${sid}/lock`, { crop: "data:image/jpeg;base64,SELFIEPIX" });
+    const selfie = await post(`/api/session/${sid}/lock`, { crop: "data:image/jpeg;base64,SELFIEPIX" + PIXELS });
     assert.equal(selfie.status, 200);
     await post(`/api/session/${sid}/keep`, {});
   }, { seen });
@@ -267,7 +269,7 @@ test("retake drops pending fields; deny purges kept fields", async () => {
     // Retake: the pending read dies with the ref; decided shows fallback.
     const rid = (await post("/api/session", { fixtureId: "nsw-dl-clean" })).body.sessionId;
     await post(`/api/session/${rid}/say`, { utterance: "I consent" });
-    await post(`/api/session/${rid}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    await post(`/api/session/${rid}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     await post(`/api/session/${rid}/retake`, {});
     let step = { body: { stage: "awaiting_doc_front" } };
     for (let i = 0; i < 12 && step.body.stage !== "decided"; i++) {
@@ -279,7 +281,7 @@ test("retake drops pending fields; deny purges kept fields", async () => {
     // Deny: kept reads purge with the captures; the restarted run falls back.
     const did = (await post("/api/session", { fixtureId: "nsw-dl-clean" })).body.sessionId;
     await post(`/api/session/${did}/say`, { utterance: "I consent" });
-    await post(`/api/session/${did}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    await post(`/api/session/${did}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     await post(`/api/session/${did}/keep`, {});
     const denied = await post(`/api/session/${did}/say`, { utterance: "I do not consent" });
     assert.deepEqual(denied.body.captures, []);
@@ -300,7 +302,7 @@ test("OCR is display-only: clean-looking reads never rescue a tampered run", asy
     const created = await post("/api/session", { fixtureId: "aus-passport-tampered-digit" });
     const id = created.body.sessionId;
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
-    await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     await post(`/api/session/${id}/keep`, {});
     let step = { body: { stage: "reading_front" } };
     for (let i = 0; i < 12 && step.body.stage !== "decided"; i++) {
@@ -345,7 +347,7 @@ test("passport doc locks never OCR: photo pages are not licences", async () => {
     const created = await post("/api/session", { fixtureId: "aus-passport-clean" });
     const id = created.body.sessionId;
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
-    const locked = await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    const locked = await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     assert.equal(locked.status, 200);
     await post(`/api/session/${id}/keep`, {});
     let step = { body: { stage: "reading_front" } };
@@ -367,7 +369,7 @@ test("partial OCR reads render unread, trimmed, and capped on both twins", async
     const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
     const id = created.body.sessionId;
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
-    await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     await post(`/api/session/${id}/keep`, {});
     let step = { body: { stage: "reading_front" } };
     for (let i = 0; i < 12 && step.body.stage !== "decided"; i++) {
@@ -394,7 +396,7 @@ test("mixed runs label each side: ocr where read, fixture where not", async () =
     const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
     const id = created.body.sessionId;
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
-    await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     await post(`/api/session/${id}/keep`, {});
     await post(`/api/session/${id}/signal`, { event: "frames_done" });
     await post(`/api/session/${id}/signal`, { event: "back_captured" });
@@ -433,6 +435,43 @@ test("short non-image crops lock cleanly and fall back with zero Wonder calls", 
   assert.ok(!seen.includes(META_MODELS.wonder), "non-image crops never reach OCR");
 });
 
+test("malformed image crops never reach OCR: bare prefix, bad MIME, short payload", async () => {
+  const seen = [];
+  await withKeyedMeta(async () => {
+    for (const crop of [
+      "data:image/",
+      "data:image/jpeg;base64,!!!not-base64!!!",
+      "data:image/svg+xml;base64," + PIXELS,
+      "data:image/jpeg;base64,short",
+    ]) {
+      const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
+      const id = created.body.sessionId;
+      await post(`/api/session/${id}/say`, { utterance: "I consent" });
+      const locked = await post(`/api/session/${id}/lock`, { crop });
+      assert.equal(locked.status, 200, `locks with ${crop.slice(0, 24)}…`);
+      assert.equal(locked.body.panel.primitive, "retake-pair");
+    }
+  }, { seen });
+  assert.ok(!seen.includes(META_MODELS.wonder), "garbage crops never reach OCR");
+});
+
+test("lock/retake loops cannot drain Meta spend: 3 attempts per stage", async () => {
+  const seen = [];
+  await withKeyedMeta(async () => {
+    const created = await post("/api/session", {});
+    const id = created.body.sessionId;
+    await post(`/api/session/${id}/say`, { utterance: "I consent" });
+    const crop = "data:image/jpeg;base64," + PIXELS;
+    for (let i = 0; i < 5; i++) {
+      const locked = await post(`/api/session/${id}/lock`, { crop });
+      assert.equal(locked.status, 200, `loop lock ${i + 1} lands`);
+      await post(`/api/session/${id}/retake`, {});
+    }
+  }, { seen });
+  const wonderCalls = seen.filter((m) => m === META_MODELS.wonder).length;
+  assert.equal(wonderCalls, 3, `5 rapid locks bill exactly 3, billed ${wonderCalls}`);
+});
+
 test("voice 'lock now' OCRs the locked frame like a tap", async () => {
   const seen = [];
   await withKeyedMeta(async () => {
@@ -441,7 +480,7 @@ test("voice 'lock now' OCRs the locked frame like a tap", async () => {
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
     const locked = await post(`/api/session/${id}/say`, {
       utterance: "lock now",
-      crop: "data:image/jpeg;base64,AAA",
+      crop: "data:image/jpeg;base64," + PIXELS,
     });
     assert.equal(locked.status, 200);
     assert.ok(locked.body.pendingCapture, "voice lock opens the pair");
@@ -463,7 +502,7 @@ test("action-form locks carry the crop to OCR", async () => {
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
     const locked = await post(`/api/session/${id}/capture`, {
       action: "lock",
-      crop: "data:image/jpeg;base64,AAA",
+      crop: "data:image/jpeg;base64," + PIXELS,
     });
     assert.equal(locked.status, 200);
     assert.ok(locked.body.pendingCapture, "action-form lock opens a pair");
@@ -487,7 +526,7 @@ test("OCR values render HTML-escaped; the JSON twin keeps raw text", async () =>
     const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
     const id = created.body.sessionId;
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
-    await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    await post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     await post(`/api/session/${id}/keep`, {});
     let step = { body: { stage: "reading_front" } };
     for (let i = 0; i < 12 && step.body.stage !== "decided"; i++) {
@@ -513,7 +552,7 @@ test("keep during the OCR await attaches the read instead of burning it", async 
     const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
     const id = created.body.sessionId;
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
-    const lockP = post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    const lockP = post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     for (let i = 0; i < 100 && !entered; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -547,7 +586,7 @@ test("deny during the OCR await abandons the lock; nothing resurrects", async ()
     const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
     const id = created.body.sessionId;
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
-    const lockP = post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64,AAA" });
+    const lockP = post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     for (let i = 0; i < 100 && !entered; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
