@@ -858,10 +858,14 @@ test('"lock now" locks immediately with the same confirm landing as a tap', asyn
   }
   await retake(id);
 
-  // A second lock POST behind an open pair holds the first card, no clobber.
+  // A second lock POST behind an open pair holds the first card, no clobber —
+  // same ref, same verdict (never a generic fallback for a sharp frame).
+  await sample(id, {});
   const first = await lock(id);
+  assert.equal(first.verdict, "Front captured: sharp, all four corners in.");
   const second = await lock(id);
   assert.equal(second.pendingCapture, first.pendingCapture);
+  assert.equal(second.verdict, first.verdict);
   await retake(id);
 
   // Outside capture, "lock now" is just chatter (no lock).

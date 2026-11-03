@@ -185,6 +185,8 @@ interface Session {
   lastSample: Telemetry | null;
   /** Locked capture awaiting Keep/Retake (opaque server-generated ref). */
   pendingCapture: string | null;
+  /** Quality verdict composed for the pending lock (re-served on re-lock). */
+  pendingVerdict: string | null;
   captureSeq: number;
   /** Consecutive arm-clean samples this stage (drives auto-capture arming). */
   cleanStreak: number;
@@ -224,6 +226,7 @@ function zeroFaultCounts(): Record<FaultKey, number> {
 function purgeCaptures(session: Session): void {
   session.captures = [];
   session.pendingCapture = null;
+  session.pendingVerdict = null;
   resultTokens.delete(session.resultToken);
   session.faultCounts = zeroFaultCounts();
   session.lastCoachText = null;
@@ -257,6 +260,7 @@ function newSession(fixtureId: string): Session {
     lastCoachText: null,
     lastSample: null,
     pendingCapture: null,
+    pendingVerdict: null,
     captureSeq: 0,
     cleanStreak: 0,
     samplesThisStage: 0,
@@ -597,6 +601,7 @@ async function doKeep(
   }
   session.captures.push(session.pendingCapture);
   session.pendingCapture = null;
+  session.pendingVerdict = null;
   if (echo !== null) {
     pushTurn(session, "you", `${echo.heard} → ${echo.resolved}`);
     pushTurn(session, "system", echo.text, "progress");
@@ -635,6 +640,7 @@ async function doRetake(
     return { status: 409 as const, body: { error: "nothing_to_retake" } };
   }
   session.pendingCapture = null;
+  session.pendingVerdict = null;
   // Fresh guidance episode: the next lock verdicts from new samples only,
   // the next arm needs a fresh clean run, and the offer runway restarts
   // (the once-per-stage offer latch itself is kept).
@@ -778,6 +784,7 @@ app.post("/api/session/:id/signal", async (c) => {
     session.lastCoachText = null;
     session.lastSample = null;
     session.pendingCapture = null;
+    session.pendingVerdict = null;
     resetArmState(session);
   }
 
@@ -956,9 +963,10 @@ async function performLock(
   heard: string | null,
 ) {
   // Idempotent behind an open pair: a racing second lock holds the first
-  // card open instead of overwriting its ref — no new surface, same step.
+  // card open instead of overwriting its ref — same step, same verdict.
   if (session.pendingCapture !== null) {
-    return await stepBody(session, id, null, false);
+    const held = await stepBody(session, id, null, false);
+    return { ...held, verdict: session.pendingVerdict };
   }
   const ref = lockRef(session);
   session.pendingCapture = ref;
@@ -968,6 +976,7 @@ async function performLock(
   // Verdict turn first, then the fixed keep/retake question: two separate
   // turns, so the non-visual review path hears quality before the choice.
   const verdict = qualityVerdict(session.flow.stage, session.lastSample);
+  session.pendingVerdict = verdict;
   pushTurn(session, "system", verdict, "progress");
   const text = LOCK_TEXT[session.flow.stage] ?? "Captured. Keep it, or retake?";
   const fired = {
@@ -1442,9 +1451,15 @@ let armTimer = null;
 // Bumped when a wait/lock utterance goes out: in-flight ticks that armed
 // before the veto retire instead of re-entering the arm.
 let armGen = 0;
+// Consecutive fire-time vetoes: after 3 the arm speaks the Lock offer,
+// so a shaky hand never loops arm/veto forever unheard.
+let fireVetoes = 0;
+// Fixed escape line for the fire-veto loop (no narration twin: the server
+// never sees fire-time vetoes, so the client speaks its own way out).
+const FIRE_VETO_OFFER = 'Auto-capture keeps missing — say lock now or tap Lock.';
 // Capture-stage command listener ("lock now" / "wait"), separate from the
-// turn listener: silence restarts it quietly (never a re-ask), and the
-// watchdog suspends entirely while Armed — stillness is the answer.
+// turn listener: silence restarts it quietly (never a re-ask — stillness
+// is the answer), and it stays live while Armed so commands veto.
 let captureRec = null;
 let captureWatchdog = null;
 // TTS/SR arbitration: keyboard-first use signals a screen reader, and
@@ -1865,6 +1880,7 @@ function stopCapture() {
   sampling = false;
   sampleInflight = false;
   sampleFails = 0;
+  fireVetoes = 0;
   setCoach('');
   clearReviewState();
   cancelArmSilent();
@@ -2008,9 +2024,10 @@ async function doLock() {
     // A failed lock always disarms (a later clean run re-arms); the stage
     // may have moved on, in which case the listener restart below no-ops.
     disarmToCoaching();
-    // Wrong-stage means a stale in-flight lock: stay disabled instead of
-    // inviting another failing tap. Other failures re-enable for a retry.
-    if (err && err.status === 409) {
+    // Wrong-stage (stale in-flight lock) and expired-session locks stay
+    // disabled instead of inviting another failing tap — Start is the only
+    // path back. Other failures re-enable for a retry.
+    if (err && (err.status === 409 || err.status === 404)) {
       lockBtn.disabled = true;
     } else {
       lockBtn.disabled = pendingRef !== null;
@@ -2071,7 +2088,20 @@ function enterArm() {
     if (armed !== true || sampling !== true || pendingRef !== null) return;
     if (sessionId !== armSession || captureStage !== armStage) return;
     // A faulted sample still on its round-trip must disarm, never lock.
-    if (fireFrameVetoed()) { disarmToCoaching(); return; }
+    // After 3 consecutive fire-time vetoes the arm speaks its own way out:
+    // the server-side offer is suppressed once armed, so this loop needs
+    // its own escape line (voice + coach twin; TTS queues, never overlaps).
+    if (fireFrameVetoed()) {
+      fireVetoes += 1;
+      if (fireVetoes >= 3) {
+        fireVetoes = 0;
+        setCoach(FIRE_VETO_OFFER);
+        speak(FIRE_VETO_OFFER);
+      }
+      disarmToCoaching();
+      return;
+    }
+    fireVetoes = 0;
     doLock();
   }, 1500);
 }
@@ -2265,7 +2295,14 @@ async function sampleTick() {
   const tickSession = sessionId;
   const tickStage = captureStage;
   const tickArm = armGen;
-  const outgoing = videoSample();
+  // A failed peek must never stick sampleInflight: one missed tick, never a dead loop.
+  let outgoing;
+  try {
+    outgoing = videoSample();
+  } catch {
+    sampleInflight = false;
+    return;
+  }
   // Immediate movement veto: a moved frame cancels the fire clock without
   // waiting for the round-trip; the POST below still resets the server run
   // so the re-arm turn speaks on arrival.

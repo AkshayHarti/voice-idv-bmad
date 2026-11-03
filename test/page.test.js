@@ -158,7 +158,10 @@ test("auto-capture arms on the clean run with a fixed beat and vetoes", async ()
   assert.ok(html.includes("captureWatchdog"), "capture-stage command watchdog");
   assert.ok(!html.includes("pendingRef !== null || armed === true"), "command listener stays live while Armed");
   assert.ok(html.includes("fireFrameVetoed"), "fire-time frame re-grade");
-  assert.ok(html.includes("if (fireFrameVetoed()) { disarmToCoaching(); return; }"), "faulted fire-time frame disarms");
+  assert.ok(html.includes("fireVetoes"), "consecutive fire-time vetoes counted");
+  assert.ok(html.includes("FIRE_VETO_OFFER"), "fire-veto loop has a spoken escape");
+  assert.ok(html.includes("one missed tick, never a dead loop"), "failed peek never sticks the sampler");
+  assert.ok(html.includes("err.status === 409 || err.status === 404"), "expired sessions keep Lock disabled");
   assert.ok(html.includes("prevLuma"), "motion baseline across samples");
   assert.ok(html.includes("MOTION_THRESHOLD"), "motion veto threshold");
   assert.ok(html.includes("LOCK_NOW_HEARD"), "lock-now command words");
