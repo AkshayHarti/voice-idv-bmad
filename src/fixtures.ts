@@ -122,8 +122,8 @@ const FIXTURES: Record<string, Fixture> = {
   },
 };
 
-// --- Glimmer edge-case fixtures (100% synthetic, appended Task 3) ---
-// Visual bases come from Glimmer (`scripts/glimmer-art.mjs`, saved under
+// --- Image edge-case fixtures (100% synthetic, appended Task 3) ---
+// Visual bases come from Muse Image (`scripts/image-art.mjs`, saved under
 // `fixtures/art/`); the MRZ and card-number regions above are composed
 // programmatically exactly like the originals, so ground truth is exact
 // and independent of the art. Both are clean: expected_failures [].

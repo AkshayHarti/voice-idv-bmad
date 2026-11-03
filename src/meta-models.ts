@@ -1,15 +1,26 @@
-// Pinned Meta model IDs + pricing (Meta phase Task 0).
-// Source: candidate IDs from the plan/rules review (Spark, SAM 3, Glimmer).
-// Status 2026-11-01: UNVERIFIED — the live probe was blocked by a sandbox
-// egress outage (every api.meta.ai call hangs, authenticated or not; $0
-// spent). Re-probe live in Task 4 and update these constants if the
-// accepted IDs differ. Tasks 1–3 consume these constants, never literals.
+// Pinned Meta model IDs + pricing (Rev 2 §11 roster).
+// Source: Cerebral Valley participant guide (rules PDF) + dev.meta.ai model
+// pages, read 2026-11-02 (voice-assistant spec §§3/11). Supersedes the meta
+// plan's table: SAM 3 → SAM 3.1; fixture art Glimmer → Muse Image; Glimmer
+// is the local always-on core, not an API role.
+// Status 2026-11-03: UNVERIFIED — no live-key probe has succeeded yet
+// (sandbox egress outage; $0 spent). Re-verify live per §12 and update
+// these constants if the accepted IDs differ. Consumers import these
+// constants, never literals. Wonder/Image/Transcribe IDs are PROVISIONAL
+// placeholders pending §12 integration confirmation.
 // Pricing units carry their basis; all estimates until the probe lands.
 
 export const META_MODELS = {
   spark: "muse-spark-1.3",
-  sam: "sam-3",
-  glimmer: "glimmer",
+  sam: "sam-3-1",
+  /** Local run-weights core label — never sent to the Model API. */
+  glimmer: "glimmer-local-core",
+  /** PROVISIONAL placeholder — confirm against the Meta model list (§12). */
+  image: "muse-image-1.0",
+  /** PROVISIONAL placeholder — confirm against the Meta model list (§12). */
+  wonder: "muse-wonder-1.0",
+  /** PROVISIONAL placeholder (§5 names this id; still UNVERIFIED per §12). */
+  transcribe: "muse-voice-transcribe-1.0",
 } as const;
 
 export interface ModelPrice {
@@ -22,8 +33,26 @@ export const PRICING: Record<string, ModelPrice> = {
     perCall: 0.00001,
     unit: "USD est/call (~100 tok @ $0.10/Mtok in, UNVERIFIED)",
   },
-  [META_MODELS.sam]: { perCall: 0.0025, unit: "USD/img (UNVERIFIED)" },
-  [META_MODELS.glimmer]: { perCall: 0.01, unit: "USD/img (UNVERIFIED)" },
+  [META_MODELS.sam]: {
+    perCall: 0.0025,
+    unit: "USD/img ($0.20/1k frames tracked video, UNVERIFIED)",
+  },
+  [META_MODELS.glimmer]: {
+    perCall: 0,
+    unit: "USD (local run-weights core — no API spend)",
+  },
+  [META_MODELS.image]: {
+    perCall: 0.01,
+    unit: "USD/img (PROVISIONAL id, UNVERIFIED)",
+  },
+  [META_MODELS.wonder]: {
+    perCall: 0.009,
+    unit: "USD est/call (~1k tok in @ $4/MTok + ~250 tok out @ $20/MTok, PROVISIONAL id, UNVERIFIED)",
+  },
+  [META_MODELS.transcribe]: {
+    perCall: 0.0005,
+    unit: "USD est/call (~10s avg utterance @ $0.18/hr, PROVISIONAL id, UNVERIFIED)",
+  },
 };
 
 export interface SpendEntry {
