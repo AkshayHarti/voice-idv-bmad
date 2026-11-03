@@ -1,15 +1,17 @@
-// Session API + single page (AU voice-IDV demo slice, spec §§2/4/7).
+// Session API + pages (AU voice-IDV demo slice, spec §§2/4/7).
 // Routes: POST /api/session, POST /api/session/:id/say,
 // POST /api/session/:id/signal, GET /api/runs, GET /api/run/:id
-// (same shape as voice-idv). Consumes Tasks 1–5: fixtures, runChecks +
+// (same shape as voice-idv), GET /result/:token, GET /api/result/:token.
+// Consumes Tasks 1–5: fixtures, runChecks +
 // decide + redact (Task 3), verifyDVS + tier (Task 4), startRun + say +
 // signal (Task 5), provider chains (this task, src/providers.ts).
 // Consent gates every run out of idle; deny/revoke purges captures fully
-// (deleted, not flagged — Task 5 left a lightweight flag only). The Decision
-// screen lists checks failures-first with Evidence plus the limitations
-// block; hard-flag runs show the generic user string while the real reasons
-// live only in the queue object (Task 4 ruling). Transcript mirrors every
-// Turn on one single page.
+// (deleted, not flagged — Task 5 left a lightweight flag only). Hard-flag
+// runs show the generic user string while the real reasons live only in
+// the queue object (Task 4 ruling). The end-user page stays verdict-only
+// (banner + spoken confirmation + customer link); the token-gated result
+// page lists checks failures-first with Evidence plus the limitations
+// block. Transcript mirrors every Turn on the end-user page.
 // Goal 2: live Capture surface behind a telemetry/coach loop
 // (POST /api/session/:id/telemetry), lock/keep/retake capture flow, and
 // Turn-bound generated panels on every step. The fixture stand-in stays
@@ -167,6 +169,8 @@ interface TranscriptLine {
 interface Session {
   flow: FlowState;
   fixture: string;
+  /** Unguessable customer-link token: one token views this run only. */
+  resultToken: string;
   /** Capture refs (synthetic fixture ids / opaque lock refs). Deny/revoke deletes them. */
   captures: string[];
   /** Mirrors every Turn plus every subject utterance. */
@@ -207,6 +211,7 @@ function zeroFaultCounts(): Record<FaultKey, number> {
 function purgeCaptures(session: Session): void {
   session.captures = [];
   session.pendingCapture = null;
+  resultTokens.delete(session.resultToken);
   session.faultCounts = zeroFaultCounts();
   session.lastCoachText = null;
   session.lastSample = null;
@@ -216,6 +221,8 @@ function newSession(fixtureId: string): Session {
   return {
     flow: startRun(fixtureId),
     fixture: fixtureId,
+    // Minted and registered by the session-create handler (needs the id).
+    resultToken: "",
     captures: [],
     transcript: [],
     faultCounts: zeroFaultCounts(),
@@ -254,6 +261,46 @@ function fallbackId(): string {
   hex[16] = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
   const s = hex.join("");
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
+}
+
+/**
+ * Customer result links: one unguessable token views one run only, for
+ * one day. The token is minted beside the session id (same UUID shape,
+ * distinct value) so the customer link stays read-only — it never
+ * doubles as session auth for the voice/capture endpoints.
+ */
+const RESULT_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface ResultToken {
+  sessionId: string;
+  createdAt: number;
+}
+
+const resultTokens = new Map<string, ResultToken>();
+
+function mintResultToken(sessionIdValue: string): string {
+  const token = sessionId();
+  resultTokens.set(token, { sessionId: sessionIdValue, createdAt: Date.now() });
+  return token;
+}
+
+/**
+ * Resolve a customer token to its run. Unknown and day-old tokens both
+ * resolve to null (expired entries are deleted on sight); callers answer
+ * 404 with nothing run-specific either way.
+ */
+function resolveResultToken(
+  token: string,
+): { session: Session; sessionId: string } | null {
+  const entry = resultTokens.get(token);
+  if (!entry) return null;
+  if (Date.now() - entry.createdAt > RESULT_TTL_MS) {
+    resultTokens.delete(token);
+    return null;
+  }
+  const session = sessions.get(entry.sessionId);
+  if (!session) return null;
+  return { session, sessionId: entry.sessionId };
 }
 
 /** Opaque server-generated capture ref (never accepted back for verify). */
@@ -447,6 +494,7 @@ async function stepBody(
     : await narrated(kind, text);
   return {
     sessionId: id,
+    customerLink: `/result/${session.resultToken}`,
     stage: session.flow.stage,
     turn: turn?.kind ?? null,
     text,
@@ -473,6 +521,7 @@ app.post("/api/session", async (c) => {
 
   const id = sessionId();
   const session = newSession(fixtureId);
+  session.resultToken = mintResultToken(id);
   pushTurn(session, "system", session.flow.last_turn?.text ?? "", session.flow.last_turn?.kind);
   sessions.set(id, session);
   return c.json(await stepBody(session, id, null, true));
@@ -836,9 +885,158 @@ app.post("/api/session/:id/capture", async (c) => {
   return c.json({ error: "unknown_action", action }, 400);
 });
 
+/**
+ * Customer result view: token-gated, silent, read-only. Serves the same
+ * deterministic report the run produced (`reportFor` — no recomputation,
+ * no second decision path). The audit is annotation via the same chain
+ * as the --meta path, never a check input.
+ */
+/** Customer result responses carry PII: never stored, never indexed. */
+const NO_STORE_NO_INDEX = {
+  "Cache-Control": "no-store",
+  "X-Robots-Tag": "noindex",
+};
+app.get("/result/:token", async (c) => {
+  const resolved = resolveResultToken(c.req.param("token"));
+  if (!resolved) return c.html(resultMissingPage(), 404, NO_STORE_NO_INDEX);
+  const report = reportFor(resolved.session);
+  if (!report) {
+    return c.html(resultPendingPage(resolved.session), 200, NO_STORE_NO_INDEX);
+  }
+  const audit = await generateAudit(report.failedFirst, report.decision, {
+    env: processEnv(),
+  });
+  return c.html(resultDecidedPage(report, audit), 200, NO_STORE_NO_INDEX);
+});
+
+/** Gated JSON twin of the result page: the run's report, token-gated. */
+app.get("/api/result/:token", (c) => {
+  const resolved = resolveResultToken(c.req.param("token"));
+  if (!resolved) return c.json({ error: "unknown_result" }, 404, NO_STORE_NO_INDEX);
+  const report = reportFor(resolved.session);
+  if (!report) {
+    return c.json({ status: "pending", stage: resolved.session.flow.stage }, 200, NO_STORE_NO_INDEX);
+  }
+  return c.json(report, 200, NO_STORE_NO_INDEX);
+});
+
 app.get("/page", (c) => c.html(PAGE));
 
 export default app;
+
+/** Server-side twin of the client's textContent-only rule. */
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+const RESULT_STYLE = `:root { color-scheme: dark; }
+  body { margin:0; padding:2rem 1.5rem 4rem; background:#0B0E13; color:#EDEFF4;
+         font:17px/1.55 ui-sans-serif,-apple-system,system-ui,sans-serif; max-width:56rem; }
+  h1 { font-size:1.3rem; margin:0 0 .2rem; letter-spacing:-.01em; }
+  .sub { color:#9AA3B2; font-size:.85rem; margin:0 0 1.5rem; }
+  h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.1em; color:#8b93a1; margin:1.4rem 0 .3rem; }
+  ul { list-style:none; padding:0; margin:0; }
+  li { display:grid; grid-template-columns:1.1rem 14rem 1fr; gap:.7rem; padding:.3rem 0;
+       border-bottom:1px solid #1b2230; font-size:.82rem; align-items:baseline; }
+  .id { font-family:ui-monospace,monospace; font-size:.76rem; }
+  .ev { color:#8b93a1; font-family:ui-monospace,monospace; font-size:.72rem; }
+  #decision { font-size:1.9rem; font-weight:650; letter-spacing:-.02em; margin:1.5rem 0 .2rem; }
+  .pass { color:#4ADE80; } .fail { color:#F87171; } .inconclusive { color:#FBBF24; }
+  #tiermsg { font-size:1rem; margin:.4rem 0; }
+  #pending { font-size:1.2rem; margin:1.5rem 0; }
+  details { font-size:.85rem; margin-top:.4rem; }
+  summary { cursor:pointer; }
+  details ol { list-style:decimal; padding-left:1.4rem; }
+  details li { display:list-item; border-bottom:1px solid #1b2230; padding:.3rem 0; }
+  .note { color:#8b93a1; font-size:.78rem; margin-top:2rem; border-top:1px solid #1b2230; padding-top:1rem; }`;
+
+/** Decided run: verdict, tier, failures-first evidence, limitations, attack surface. */
+function resultDecidedPage(
+  report: Report,
+  audit: { hypotheses: [string, string, string]; provider: ProviderName },
+): string {
+  const verdictClass =
+    report.decision === "verified"
+      ? "pass"
+      : report.decision === "rejected"
+        ? "fail"
+        : "inconclusive";
+  const checks = report.failedFirst
+    .map((check) => {
+      const cls =
+        check.result === "pass"
+          ? "pass"
+          : check.result === "fail"
+            ? "fail"
+            : "inconclusive";
+      const mark = check.result === "pass" ? "✓" : check.result === "fail" ? "✗" : "?";
+      return `<li><span class="${cls}">${mark}</span> <span class="id">${esc(check.id)}</span> <span class="ev">${esc(check.evidence)}</span></li>`;
+    })
+    .join("");
+  const limitations = report.limitations
+    .map(
+      (line) =>
+        `<li><span>–</span> <span>${esc(line)}</span> <span></span></li>`,
+    )
+    .join("");
+  const hypotheses = audit.hypotheses.map((h) => `<li>${esc(h)}</li>`).join("");
+  const providerLabel = audit.provider === "meta" ? "Spark" : "local templates";
+  return `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aria — Verification result</title>
+<style>${RESULT_STYLE}</style>
+<h1>Verification result</h1>
+<p class="sub">Run ${esc(report.run_id)} · read-only result view</p>
+<div id="decision" class="${verdictClass}">${esc(report.decision)}</div>
+<div id="tiermsg">${esc(report.userMessage)}</div>
+<h2>checks — failures first</h2>
+<ul>${checks}</ul>
+<h2>limitations</h2>
+<ul>${limitations}</ul>
+<h2>attack surface</h2>
+<details><summary>3 attack hypotheses (${providerLabel})</summary><ol>${hypotheses}</ol><p class="note">Annotations only — the Decision above comes from deterministic checks.</p></details>
+<p class="note">One link views one run. This page is silent and read-only: it never re-runs checks or alters the verdict.</p>
+</html>`;
+}
+
+/** Valid token, undecided run: pending state naming the stage. */
+function resultPendingPage(session: Session): string {
+  return `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aria — Verification result</title>
+<style>${RESULT_STYLE}</style>
+<h1>Verification result</h1>
+<p class="sub">Run ${esc(session.fixture)} · read-only result view</p>
+<div id="pending">Result not ready — this run is at stage ${esc(session.flow.stage)}.</div>
+<p class="note">The evidence lands here at decision. One link views one run.</p>
+</html>`;
+}
+
+/**
+ * Wrong or day-old token: nothing run-specific, no report keys. Own
+ * minimal style so even CSS selectors carry no report-key substrings.
+ */
+function resultMissingPage(): string {
+  return `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Result unavailable</title>
+<style>body { margin:0; padding:2rem 1.5rem; background:#0B0E13; color:#EDEFF4;
+ font:17px/1.55 ui-sans-serif,-apple-system,system-ui,sans-serif; }
+ h1 { font-size:1.3rem; }</style>
+<h1>Result unavailable</h1>
+<p>This result link is invalid or expired.</p>
+</html>`;
+}
 
 const PAGE = `<!doctype html>
 <html lang="en">
@@ -935,7 +1133,9 @@ const PAGE = `<!doctype html>
   summary { cursor:pointer; }
   details ol { list-style:decimal; padding-left:1.4rem; }
   details li { display:list-item; border-bottom:1px solid var(--line); padding:.3rem 0; }
-  #tiermsg { font-size:1rem; margin:.4rem 0; }
+  #customerLink { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center;
+                 margin:.4rem 0 1rem; font-size:.85rem; }
+  #customerLink input { max-width:22rem; }
   @media (prefers-reduced-motion: reduce) {
     #orb.listening, #orb.speaking { box-shadow:none; }
     #captureFrame.locked { box-shadow:0 0 0 2px #4ADE80; }
@@ -982,15 +1182,14 @@ const PAGE = `<!doctype html>
 </form>
 
 <div id="decision"></div>
-<div id="tiermsg"></div>
-<div id="checks"></div>
+<div id="customerLink"></div>
 <p class="note" id="note"></p>
 
 <script type="module">
 const $ = (id) => document.getElementById(id);
 const fixturesEl = $('fixtures'), transcriptEl = $('transcript'), stageEl = $('stage');
-const listenEl = $('listen'), decisionEl = $('decision'), tierEl = $('tiermsg');
-const checksEl = $('checks');
+const listenEl = $('listen'), decisionEl = $('decision');
+const linkEl = $('customerLink');
 const noteEl = $('note'), startBtn = $('start'), inputEl = $('utterance');
 const orbEl = $('orb'), spokenEl = $('spoken'), panelEl = $('panel');
 const captureWrap = $('captureWrap'), captureFrame = $('captureFrame');
@@ -1044,6 +1243,7 @@ let activeRecognition = null;
 let voiceGen = 0;
 let silenceParked = false;
 let pendingRef = null;
+let latestCustomerLink = null;
 // Confirm-card review state: device-local snapshot (data URL, never posted),
 // server verdict caption, stand-in flag, and whether the card is on screen.
 let pendingSnapshot = null;
@@ -1201,103 +1401,46 @@ function postError(err) {
 }
 
 function pause(ms) { return new Promise(r => setTimeout(r, ms)); }
-function auditPanel(audit) {
-  const details = document.createElement('details');
-  const summary = document.createElement('summary');
-  summary.textContent = '3 attack hypotheses (' + (audit.provider === 'meta' ? 'Spark' : 'local templates') + ')';
-  details.append(summary);
-  const list = document.createElement('ol');
-  for (const h of audit.hypotheses) {
-    const li = document.createElement('li');
-    li.textContent = h;                 // textContent only: never innerHTML
-    list.append(li);
-  }
-  details.append(list);
-  const note = document.createElement('p');
-  note.className = 'note';
-  note.textContent = 'Annotations only — the Decision above comes from deterministic checks.';
-  details.append(note);
-  return details;
-}
-
-/** Decision screen, data-bound to the generated evidence panel. */
-function renderDecisionFromPanel(panel, report) {
+/**
+ * Verdict-only decision moment: the banner plus the copyable customer
+ * link beside it. The full result lives behind the customer link only —
+ * never on this end-user surface.
+ */
+function renderDecisionFromPanel(panel, report, customerLink) {
   const verdict = (panel && panel.verdict) || (report && report.decision) || '';
-  const panelEvidence = panel && panel.evidence;
-  const evidence = (panelEvidence && panelEvidence.length > 0 ? panelEvidence : null) || (report && report.failedFirst) || [];
-  const userMessage = (panel && panel.userMessage) || (report && report.userMessage) || '';
-  const limitations = (panel && panel.limitations) || (report && report.limitations) || [];
-  const fixture = (report && report.fixture) || fixtureId;
 
   decisionEl.textContent = verdict;
   decisionEl.className = verdict === 'verified' ? 'pass'
     : verdict === 'rejected' ? 'fail' : 'inconclusive';
 
-  tierEl.textContent = userMessage;
-
-  checksEl.replaceChildren();
-  const h = document.createElement('h2');
-  h.textContent = 'checks — failures first';
-  const ul = document.createElement('ul');
-  for (const check of evidence) {
-    const li = document.createElement('li');
-    const mark = document.createElement('span');
-    mark.className = check.result === 'pass' ? 'pass' : check.result === 'fail' ? 'fail' : 'inconclusive';
-    mark.textContent = check.result === 'pass' ? '\u2713' : check.result === 'fail' ? '\u2717' : '?';
-    const name = document.createElement('span');
-    name.className = 'id';
-    name.textContent = check.id;
-    const ev = document.createElement('span');
-    ev.className = 'ev';
-    ev.textContent = check.evidence;
-    li.append(mark, name, ev);
-    ul.append(li);
-  }
-  checksEl.append(h, ul);
-
-  const limits = document.createElement('h2');
-  limits.textContent = 'limitations';
-  checksEl.append(limits);
-  const lulum = document.createElement('ul');
-  for (const line of limitations) {
-    const li = document.createElement('li');
-    const dot = document.createElement('span');
-    dot.textContent = '–';
-    const what = document.createElement('span');
-    what.textContent = line;
-    const spacer = document.createElement('span');
-    li.append(dot, what, spacer);
-    lulum.append(li);
-  }
-  checksEl.append(lulum);
-
-  const auditH = document.createElement('h2');
-  auditH.textContent = 'attack surface';
-  checksEl.append(auditH);
-  const auditBox = document.createElement('div');
-  checksEl.append(auditBox);
-  if (report && report.audit) {
-    auditBox.append(auditPanel(report.audit));
-  } else {
-    // On-demand so a slow model call never delays the Decision screen.
-    const b = document.createElement('button');
-    b.textContent = 'Run adversarial audit';
-    b.addEventListener('click', async () => {
-      b.disabled = true;
-      b.textContent = 'Auditing…';
+  linkEl.replaceChildren();
+  if (customerLink) {
+    const absolute = new URL(customerLink, location.origin).href;
+    const caption = document.createElement('span');
+    caption.textContent = 'Customer result link:';
+    const link = document.createElement('a');
+    link.href = customerLink;
+    link.textContent = 'Open result';
+    const field = document.createElement('input');
+    field.readOnly = true;
+    field.value = absolute;
+    field.setAttribute('aria-label', 'Customer result link');
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = 'Copy link';
+    copy.addEventListener('click', async () => {
       try {
-        const res = await fetch('/api/run/' + fixture + '?meta=1');
-        if (!res.ok) throw new Error('audit -> ' + res.status);
-        const meta = await res.json();
-        auditBox.replaceChildren(auditPanel(meta.audit));
+        await navigator.clipboard.writeText(field.value);
+        copy.textContent = 'Copied';
       } catch {
-        b.disabled = false;
-        b.textContent = 'Run adversarial audit';
+        field.select();
+        copy.textContent = 'Copy failed — select the link';
       }
     });
-    auditBox.append(b);
+    linkEl.append(caption, link, field, copy);
   }
 }
+
 
 /**
  * Generated-panel renderer. One panel per Turn, replaced on Turn close;
@@ -1316,7 +1459,7 @@ function renderPanel(panel, fallbackText) {
     return;
   }
   if (panel.primitive === 'evidence-peek') {
-    renderDecisionFromPanel(panel, null);
+    renderDecisionFromPanel(panel, null, latestCustomerLink);
     return;
   }
   const card = document.createElement('div');
@@ -1850,7 +1993,8 @@ async function drive(step) {
   await speak(step.narration.text);
 
   if (step.report) {
-    renderDecisionFromPanel(step.panel, step.report);
+    latestCustomerLink = step.customerLink ?? null;
+    renderDecisionFromPanel(step.panel, step.report, step.customerLink);
     listenEl.textContent = '';
     stopCapture();
     return;
@@ -2020,8 +2164,8 @@ startBtn.addEventListener('click', async () => {
   setCoach('');
   decisionEl.textContent = '';
   decisionEl.className = '';
-  tierEl.textContent = '';
-  checksEl.replaceChildren();
+  latestCustomerLink = null;
+  linkEl.replaceChildren();
   startBtn.disabled = true;
 
   const created = await post('/api/session', { fixtureId });

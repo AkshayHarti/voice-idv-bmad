@@ -495,6 +495,7 @@ test("telemetry and lock responses carry the additive capture keys", async () =>
     announced: "boolean",
     captures: { array: [] },
     capturesPurged: "boolean",
+    customerLink: "string",
     fault: "string",
     faultCounts: {
       dark: "number",
@@ -648,6 +649,7 @@ test("denied and clean telemetry responses pin their shapes", async () => {
     announced: "boolean",
     captures: { array: [] },
     capturesPurged: "boolean",
+    customerLink: "string",
     fault: "object",
     faultCounts: {
       dark: "number",

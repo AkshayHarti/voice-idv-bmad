@@ -28,3 +28,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-human-capture-confirm.md`
   summary: Add executed DOM/speech-order coverage for the confirm-card lifecycle, verdict/echo ordering, and SR arbitration.
   evidence: review found page tripwires are string-literal only; no browser harness exists and the on-device lock run is the stated manual gate.
+- source_spec: `_bmad-output/implementation-artifacts/spec-customer-view.md`
+  summary: Keep check evidence out of end-user API payloads, not just rendered HTML (step JSON still carries the full report; /api/run/:id serves fixture reports openly).
+  evidence: verification found the audience split is render-level per spec; true payload-hardening changes pinned API shapes and needs a spec-level decision.

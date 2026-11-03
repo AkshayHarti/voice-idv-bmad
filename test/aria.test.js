@@ -89,10 +89,12 @@ test("page chrome names Aria (title, h1, sub-line)", async () => {
   assert.equal(tagText(html, "title"), PAGE_TITLE);
   assert.equal(tagText(html, "h1"), PAGE_TITLE);
   assert.equal(subLine(html), PAGE_SUB);
+  // Decision headings moved behind the customer token gate (test/result.test.js):
+  // the end-user page renders the verdict moment only.
   for (const heading of ["checks — failures first", "limitations", "attack surface"]) {
     assert.ok(
-      html.includes(`textContent = '${heading}'`),
-      `decision heading unchanged: ${heading}`,
+      !html.includes(heading),
+      `end-user page stripped of decision heading: ${heading}`,
     );
   }
 });
@@ -159,6 +161,7 @@ function stepShape(transcriptShapes, reportShape, intentShape = "object", captur
     advanced: "boolean",
     captures: capturesShape,
     capturesPurged: "boolean",
+    customerLink: "string",
     intent: intentShape,
     narration: NARRATION_SHAPE,
     panel: panelShape,

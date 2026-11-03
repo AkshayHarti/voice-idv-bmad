@@ -109,7 +109,7 @@ test("failure paths message instead of stalling silently", async () => {
   assert.ok(html.split("setCoach('')").length - 1 >= 3, "coach clears when capture stops");
   assert.ok(html.includes("sampleFails"), "sampler counts consecutive failures");
   assert.ok(html.includes("Connection lost"), "dead server announced on coach card");
-  assert.ok(html.includes("panelEvidence"), "empty panel evidence falls back to report");
+  assert.ok(!html.includes("panelEvidence"), "end-user page renders no panel evidence (see test/result.test.js)");
   assert.ok(html.includes("err.status"), "thrown errors carry HTTP status");
   assert.ok(html.includes("err.status === 409"), "stale lock stays disabled");
   assert.ok(html.includes("Something went wrong"), "malformed steps bail with recovery");
