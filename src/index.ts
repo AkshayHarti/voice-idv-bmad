@@ -190,6 +190,8 @@ interface Session {
   captureSeq: number;
   /** Consecutive arm-clean samples this stage (drives auto-capture arming). */
   cleanStreak: number;
+  /** Wall-clock of the last clean sample (stale runs never arm). */
+  lastCleanAt: number | null;
   /** Telemetry samples seen this stage (drives the proactive Lock offer). */
   samplesThisStage: number;
   /** True once a clean run armed this stage (suppresses the offer). */
@@ -202,6 +204,8 @@ interface Session {
 
 /** Telemetry samples without an arm (~12 s at 5 Hz) before the proactive Lock offer. */
 export const OFFER_AFTER_SAMPLES = 60;
+/** Max gap between clean samples (2x the 200 ms cadence) that still extends the run. */
+export const STREAK_FRESH_MS = 400;
 
 const sessions = new Map<string, Session>();
 
@@ -241,6 +245,7 @@ function purgeCaptures(session: Session): void {
  */
 function resetArmState(session: Session): void {
   session.cleanStreak = 0;
+  session.lastCleanAt = null;
   session.samplesThisStage = 0;
   session.armedThisStage = false;
   session.offerMade = false;
@@ -263,6 +268,7 @@ function newSession(fixtureId: string): Session {
     pendingVerdict: null,
     captureSeq: 0,
     cleanStreak: 0,
+    lastCleanAt: null,
     samplesThisStage: 0,
     armedThisStage: false,
     offerMade: false,
@@ -869,7 +875,17 @@ async function handleTelemetry(c: {
   const pairOpen = session.pendingCapture !== null;
   const wasArmed = session.cleanStreak >= CLEAN_RUN_ARM;
   const armClean = isArmClean(sample);
-  session.cleanStreak = armClean && !pairOpen ? session.cleanStreak + 1 : 0;
+  // Freshness gate: the run counts consecutive clean samples in time, not
+  // just in sequence — under a slow server the evidence would be stale.
+  const now = Date.now();
+  const fresh =
+    session.lastCleanAt !== null && now - session.lastCleanAt <= STREAK_FRESH_MS;
+  if (armClean && !pairOpen) {
+    session.cleanStreak = fresh ? session.cleanStreak + 1 : 1;
+    session.lastCleanAt = now;
+  } else {
+    session.cleanStreak = 0;
+  }
   // Strays behind an open pair are not framing effort: they count toward
   // nothing (the clean run above already ignores them the same way).
   if (!pairOpen) session.samplesThisStage += 1;

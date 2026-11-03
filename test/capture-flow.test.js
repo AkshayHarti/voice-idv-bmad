@@ -984,6 +984,16 @@ test("garbage telemetry never faults or arms; huge readings fail closed", async 
   assert.equal(huge.cleanStreak, 0);
 });
 
+test("stale clean samples restart the run instead of arming", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  for (let i = 0; i < 3; i++) await sample(id, {});
+  await new Promise((r) => setTimeout(r, 500));
+  const stale = await sample(id, {});
+  assert.equal(stale.cleanStreak, 1, "a 500ms-old run does not extend");
+  assert.equal(stale.armed, false);
+});
+
 test("stray samples behind an open pair never rebuild the run", async () => {
   const id = await start("nsw-dl-clean");
   await say(id, "I consent");
