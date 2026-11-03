@@ -49,3 +49,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-auto-capture.md`
   summary: Cover the client auto-fire clock (beat-to-lock timing, veto fall-through) with executing verification or a recorded manual on-device pass.
   evidence: review verified the fire clock is pinned only by source-text checks; a wrong delay or dropped doLock stays green, and the spec gates client behavior on the manual run.
+- source_spec: none
+  summary: Run OCR on the captured document (server Meta vision on the locked crop) and send extracted details to the customer page.
+  evidence: split from the VIC+OCR intent as the second goal; VIC goes first to settle field shapes.

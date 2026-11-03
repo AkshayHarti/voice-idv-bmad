@@ -48,6 +48,8 @@ test("meta path decides identically to no-meta on every fixture", async () => {
     "nsw-dl-missing-back",
     "aus-passport-glare",
     "nsw-dl-tilt",
+    "vic-dl-clean",
+    "vic-dl-missing-back",
   ]) {
     const meta = await evaluateFixtureMeta(
       id,

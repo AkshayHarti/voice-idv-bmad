@@ -53,6 +53,7 @@ app.get("/", (c) => c.text(hello()));
 
 /** Fixture ids served by this demo slice (100% synthetic). */
 const RUN_IDS = [
+  "vic-dl-clean",
   "aus-passport-clean",
   "aus-passport-tampered-digit",
   "nsw-dl-clean",

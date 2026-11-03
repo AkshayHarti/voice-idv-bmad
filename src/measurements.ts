@@ -3,7 +3,7 @@
 // and the session report builder (index.ts, `evaluateFixture`), so both
 // decide identically per fixture. Demo only: fields come from fixture
 // ground truth, never from a live capture.
-import { parseNSWDL } from "./au_dl.js";
+import { parseNSWDL, parseVICDL } from "./au_dl.js";
 import type { Measurements } from "./checks.js";
 import { loadFixture } from "./fixtures.js";
 import { parseTD3 } from "./mrz.js";
@@ -37,7 +37,7 @@ export function buildMeasurements(fixtureId: string): Measurements {
     kind: "au_dl",
     mrz_lines: null,
     viz: null,
-    dl: parseNSWDL(fx.front, fx.back),
+    dl: fx.state === "VIC" ? parseVICDL(fx.front, fx.back) : parseNSWDL(fx.front, fx.back),
     today: RUN_TODAY,
     image_quality_inconclusive: false,
     portrait_present: true,

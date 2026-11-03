@@ -68,6 +68,34 @@ test("clean verifies, tampered rejects, no-meta parity", async () => {
   assert.equal(withMeta.decision, clean.decision);
 });
 
+test("API default session opens on vic-dl-clean; runs list leads with VIC", async () => {
+  const runs = await app.request("/api/runs");
+  assert.equal(runs.status, 200);
+  const list = await runs.json();
+  assert.equal(list[0].id, "vic-dl-clean");
+
+  const created = await post("/api/session", {});
+  assert.equal(created.status, 200);
+  const id = created.body.sessionId;
+  let step = await post(`/api/session/${id}/say`, { utterance: "I consent" });
+  assert.equal(step.body.stage, "awaiting_doc_front");
+  for (let i = 0; i < 12 && step.body.stage !== "decided"; i++) {
+    const event = AUTO_SIGNAL[step.body.stage];
+    assert.ok(event, `no auto signal for stage ${step.body.stage}`);
+    step = await post(`/api/session/${id}/signal`, { event });
+  }
+  assert.equal(step.body.stage, "decided");
+  assert.equal(step.body.report.fixture, "vic-dl-clean");
+  assert.equal(step.body.report.decision, "verified");
+});
+
+test("unknown fixture id still 404s with the existing error shape", async () => {
+  const created = await post("/api/session", { fixtureId: "qld-dl-clean" });
+  assert.equal(created.status, 404);
+  assert.equal(created.body.error, "unknown_fixture");
+  assert.equal(created.body.id, "qld-dl-clean");
+});
+
 test("revoke consent normalises to deny and purges captures", async () => {
   const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
   assert.equal(created.status, 200);
