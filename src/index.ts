@@ -391,7 +391,7 @@ const RETAKE_UTTERANCE = /^\s*(retake|take (it |that )?again)\s*\.?\s*$/i;
  * ("don't lock now") never match and still read as deny first.
  */
 export const LOCK_NOW_UTTERANCE =
-  /^\s*(please\s+)?lock(\s+it(\s+now)?|\s+now(\s+please)?|\s+this)?(\s+please)?\s*\.?\s*$/i;
+  /^\s*(please\s+)?lock(\s+it(\s+now)?|\s+now(\s+please)?|\s+this)?(\s+please)?\s*[.!?]?\s*$/i;
 
 /** Near-miss targets: the same closed pair phrasing, typo-tolerant. */
 const KEEP_TARGETS = ["keep", "keep it"];
@@ -752,8 +752,12 @@ app.post("/api/session/:id/say", async (c) => {
   // Full deny purge: captures are deleted on deny/revoke, not flagged.
   if (next.last_intent === "deny") purgeCaptures(session);
   // Voice veto: "wait" cancels the arm (a fresh clean run must re-arm)
+  // and breaks the veto streak (a deliberate hold is not instability)
   // while coaching resumes underneath.
-  if (next.last_intent === "wait") session.cleanStreak = 0;
+  if (next.last_intent === "wait") {
+    session.cleanStreak = 0;
+    session.vetoStreak = 0;
+  }
   if (next.stage !== before) {
     session.lastCoachText = null;
     session.lastSample = null;
@@ -1421,7 +1425,7 @@ const CAPTURE_SHORT = {
 const BEAT_TWIN = 'Perfect — hold still, capturing.';
 // Command words heard by the capture-stage listener (twins of the server
 // matchers — LOCK_NOW_UTTERANCE in this file, wait intent in src/flow.ts).
-const LOCK_NOW_HEARD = /^\\s*(please\\s+)?lock(\\s+it(\\s+now)?|\\s+now(\\s+please)?|\\s+this)?(\\s+please)?\\s*\\.?\\s*$/i;
+const LOCK_NOW_HEARD = /^\\s*(please\\s+)?lock(\\s+it(\\s+now)?|\\s+now(\\s+please)?|\\s+this)?(\\s+please)?\\s*[.!?]?\\s*$/i;
 const WAIT_HEARD = /\\bwait\\b|\\bhold\\s+on\\b|\\bhold\\s+off\\b/i;
 // Snapshot-failed fallback: the card still pairs a generic verdict caption
 // with Keep/Retake when the frame grab fails on live video.
@@ -2344,6 +2348,10 @@ async function sampleTick() {
       // No panel render: a late arming tick carries stale coaching that
       // would contradict the spoken beat.
       enterArm();
+      // The beat jumps the TTS queue: the 1.5 s fire clock is already
+      // running, so a backed-up coaching utterance must not eat the lead
+      // time. Safe — speak() resolves idempotently on interrupt.
+      if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch { /* already clear */ } }
       await speak(BEAT_TWIN);
       return;
     }

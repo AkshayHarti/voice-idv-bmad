@@ -798,6 +798,19 @@ test("three vetoes diagnose; a lock resets the veto streak", async () => {
   for (let i = 0; i < 4; i++) await sample(id2, {});
   const cleared = await sample(id2, { motion: 0.9 });
   assert.equal(cleared.text, "Lost the steady frame — hold still and I'll try again.");
+
+  // A deliberate wait breaks the streak too: veto, veto, wait, veto speaks
+  // the re-arm line, never the shifting-framing diagnose.
+  const id3 = await start("nsw-dl-clean");
+  await say(id3, "I consent");
+  for (let cycle = 0; cycle < 2; cycle++) {
+    for (let i = 0; i < 4; i++) await sample(id3, {});
+    await sample(id3, { motion: 0.9 });
+  }
+  await say(id3, "wait");
+  for (let i = 0; i < 4; i++) await sample(id3, {});
+  const held = await sample(id3, { motion: 0.9 });
+  assert.equal(held.text, "Lost the steady frame — hold still and I'll try again.");
 });
 
 test('"wait" cancels the arm with the hold-off line; coaching resumes', async () => {

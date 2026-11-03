@@ -163,6 +163,7 @@ test("auto-capture arms on the clean run with a fixed beat and vetoes", async ()
   assert.ok(html.includes("one missed tick, never a dead loop"), "failed peek never sticks the sampler");
   assert.ok(html.includes("err.status === 409 || err.status === 404"), "expired sessions keep Lock disabled");
   assert.ok(html.includes("restartCaptureListener"), "recognizer restarts back off on persistent errors");
+  assert.ok(html.includes("speechSynthesis.cancel()"), "beat jumps the TTS queue at arm entry");
   assert.ok(html.includes("prevLuma"), "motion baseline across samples");
   assert.ok(html.includes("MOTION_THRESHOLD"), "motion veto threshold");
   assert.ok(html.includes("LOCK_NOW_HEARD"), "lock-now command words");
@@ -175,7 +176,7 @@ test("client and server command matchers agree on the lock/wait vocabulary", asy
   const html = await getPage();
   const lockHeard = eval(html.match(/const LOCK_NOW_HEARD = (\/.*?\/i);/)[1]);
   const waitHeard = eval(html.match(/const WAIT_HEARD = (\/.*?\/i);/)[1]);
-  for (const s of ["lock", "lock it", "lock now", "lock this", "lock it now", "lock now please", "please lock now"]) {
+  for (const s of ["lock", "lock it", "lock now", "lock this", "lock it now", "lock now please", "please lock now", "lock now!", "lock now?"]) {
     assert.ok(LOCK_NOW_UTTERANCE.test(s), `server must fire on ${s}`);
     assert.ok(lockHeard.test(s), `client must hear ${s}`);
   }
