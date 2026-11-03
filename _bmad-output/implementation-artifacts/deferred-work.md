@@ -52,3 +52,6 @@
 - source_spec: none
   summary: Run OCR on the captured document (server Meta vision on the locked crop) and send extracted details to the customer page.
   evidence: split from the VIC+OCR intent as the second goal; VIC goes first to settle field shapes.
+- source_spec: `_bmad-output/implementation-artifacts/spec-doc-ocr.md`
+  summary: Cover the client takeCrop flow with executing verification (DOM/canvas harness) instead of source-text pins.
+  evidence: review verified a runtime-broken takeCrop stays green while all live locks silently degrade to fixture fallback; no harness precedent exists in the repo.

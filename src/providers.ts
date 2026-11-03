@@ -296,3 +296,108 @@ export async function segment(
 
   return { provider: "local", regions: knownRegions, skipped };
 }
+
+export interface OcrRequest {
+  /** Which side was locked (front carries identity, back the card number). */
+  side: "front" | "back";
+  /** Base64 locked doc crop; absent on the stand-in path (no OCR attempted). */
+  imageBase64?: string;
+}
+
+export interface OcrFields {
+  side: "front" | "back";
+  licence_number?: string;
+  full_name?: string;
+  dob?: string;
+  address?: string;
+  expiry_date?: string;
+  card_number?: string;
+}
+
+const OCR_KEYS = [
+  "licence_number",
+  "full_name",
+  "dob",
+  "address",
+  "expiry_date",
+  "card_number",
+] as const;
+
+/**
+ * Pull DL fields out of a vision-model reply. Accepts a JSON object with
+ * any of the known keys (surrounding prose tolerated); unknown keys are
+ * dropped and values are trimmed + capped. Null when no known key reads.
+ * Never throws.
+ */
+function ocrFieldsFromText(text: string, side: "front" | "back"): OcrFields | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  const fields: OcrFields = { side };
+  let found = 0;
+  for (const key of OCR_KEYS) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      fields[key] = value.trim().slice(0, 200);
+      found += 1;
+    }
+  }
+  return found > 0 ? fields : null;
+}
+
+/**
+ * Server OCR on a locked doc crop (display-only — never fed to checks).
+ * Meta-first via Wonder (the only text-from-image candidate, provisional);
+ * the segment pattern: image_base64 + 8s budget, spend logged after
+ * success only, skipped[] on failure, never throws. No offshore fallback.
+ */
+export async function ocrCrop(
+  request: OcrRequest,
+  deps: ChainDeps = {},
+): Promise<{ provider: ProviderName; fields: OcrFields | null; skipped: string[] }> {
+  const env = deps.env ?? {};
+  const fetcher = deps.fetcher ?? fetch;
+  const skipped: string[] = [];
+
+  if (!env.META_API_KEY) {
+    skipped.push("meta: not configured");
+    return { provider: "local", fields: null, skipped };
+  }
+  if (!request.imageBase64) {
+    skipped.push("meta: no image supplied (no OCR attempted)");
+    return { provider: "local", fields: null, skipped };
+  }
+
+  try {
+    const payload = await postJson(
+      fetcher,
+      `${META_BASE}/responses`,
+      { authorization: `Bearer ${env.META_API_KEY}` },
+      {
+        model: META_MODELS.wonder,
+        input:
+          `Read this Australian driver licence ${request.side}. ` +
+          `Reply with JSON only, keys licence_number, full_name, dob, ` +
+          `address, expiry_date (front) and card_number (back).`,
+        image_base64: request.imageBase64,
+      },
+      8000,
+    );
+    const text = responseText(payload);
+    const fields = text ? ocrFieldsFromText(text, request.side) : null;
+    if (!fields) throw new Error("meta returned no fields");
+    logSpend(META_MODELS.wonder, 1, PRICING[META_MODELS.wonder].perCall);
+    return { provider: "meta", fields, skipped };
+  } catch (error) {
+    skipped.push(`meta: ${(error as Error).message}`);
+    return { provider: "local", fields: null, skipped };
+  }
+}

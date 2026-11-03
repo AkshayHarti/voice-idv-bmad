@@ -11,7 +11,9 @@
 // the queue object (Task 4 ruling). The end-user page stays verdict-only
 // (banner + spoken confirmation + customer link); the token-gated result
 // page lists checks failures-first with Evidence plus the limitations
-// block. Transcript mirrors every Turn on the end-user page.
+// block and the redacted document details read from the locked crops
+// (server OCR, display-only — never a check input). Transcript mirrors
+// every Turn on the end-user page.
 // Goal 2: live Capture surface behind a telemetry/coach loop
 // (POST /api/session/:id/telemetry), lock/keep/retake capture flow, and
 // Turn-bound generated panels on every step. The fixture stand-in stays
@@ -30,8 +32,9 @@ import type { FlowState, Stage } from "./flow.js";
 import { buildMeasurements } from "./measurements.js";
 import { spendTotal } from "./meta-models.js";
 import { generatePanel } from "./panels.js";
-import { configuredProviders, narrate, segment, templateNarration } from "./providers.js";
-import type { ProviderName } from "./providers.js";
+import { configuredProviders, narrate, ocrCrop, segment, templateNarration } from "./providers.js";
+import type { OcrFields, ProviderName } from "./providers.js";
+import { redactRef } from "./redact.js";
 import { CLEAN_RUN_ARM, coach, FAULT_KEYS, faultKey, isArmClean, isLockReady } from "./telemetry.js";
 import type { FaultKey, Telemetry } from "./telemetry.js";
 import { tier } from "./fraud.js";
@@ -92,6 +95,35 @@ export interface Report {
   limitations: string[];
   /** Adversarial audit; present on the --meta path only (annotation, never a check input). */
   audit?: { hypotheses: [string, string, string]; provider: ProviderName };
+  /**
+   * Document details read from the locked crops (display-only — never a
+   * check/DVS/Decision input). Absent when nothing read and no DL ground
+   * truth exists to label (passport runs without OCR). Numbers pre-redacted;
+   * names/dates/addresses verbatim like check evidence. Both twins serve
+   * this same object.
+   */
+  ocr?: OcrDetails;
+}
+
+/** Front values as rendered: numbers redacted, the rest verbatim. */
+export interface OcrFrontValues {
+  licence_number: string;
+  full_name: string;
+  dob: string;
+  address: string;
+  expiry_date: string;
+}
+
+/** Back values as rendered: the card number redacted. */
+export interface OcrBackValues {
+  card_number: string;
+}
+
+export type OcrSource = "ocr" | "fixture-fallback";
+
+export interface OcrDetails {
+  front: { source: OcrSource; values: OcrFrontValues } | null;
+  back: { source: OcrSource; values: OcrBackValues } | null;
 }
 
 /**
@@ -188,6 +220,10 @@ interface Session {
   pendingCapture: string | null;
   /** Quality verdict composed for the pending lock (re-served on re-lock). */
   pendingVerdict: string | null;
+  /** OCR fields by kept capture ref (display-only; dropped with the ref). */
+  ocrByCapture: Record<string, OcrFields>;
+  /** Fields extracted for the pending lock; kept or discarded with the ref. */
+  pendingOcr: OcrFields | null;
   captureSeq: number;
   /** Consecutive arm-clean samples this stage (drives auto-capture arming). */
   cleanStreak: number;
@@ -232,6 +268,8 @@ function purgeCaptures(session: Session): void {
   session.captures = [];
   session.pendingCapture = null;
   session.pendingVerdict = null;
+  session.ocrByCapture = {};
+  session.pendingOcr = null;
   resultTokens.delete(session.resultToken);
   session.faultCounts = zeroFaultCounts();
   session.lastCoachText = null;
@@ -267,6 +305,8 @@ function newSession(fixtureId: string): Session {
     lastSample: null,
     pendingCapture: null,
     pendingVerdict: null,
+    ocrByCapture: {},
+    pendingOcr: null,
     captureSeq: 0,
     cleanStreak: 0,
     lastCleanAt: null,
@@ -579,7 +619,79 @@ app.post("/api/session", async (c) => {
 
 function reportFor(session: Session): Report | null {
   if (session.flow.stage !== "decided") return null;
-  return evaluateFixture(session.fixture);
+  const report = evaluateFixture(session.fixture);
+  const ocr = ocrDetailsFor(session);
+  if (ocr) report.ocr = ocr;
+  return report;
+}
+
+/** Unread OCR value: the field exists in the shape but nothing read it. */
+const OCR_UNREAD = "unread";
+
+function ocrText(value: string | undefined): string {
+  const trimmed = (value ?? "").trim();
+  return trimmed ? trimmed.slice(0, 200) : OCR_UNREAD;
+}
+
+/** Front fields as rendered: the licence number redacted, the rest verbatim. */
+function redactedFront(src: {
+  licence_number?: string;
+  full_name?: string;
+  dob?: string;
+  address?: string;
+  expiry_date?: string;
+}): OcrFrontValues {
+  return {
+    licence_number: src.licence_number
+      ? redactRef("licence_number", src.licence_number)
+      : OCR_UNREAD,
+    full_name: ocrText(src.full_name),
+    dob: ocrText(src.dob),
+    address: ocrText(src.address),
+    expiry_date: ocrText(src.expiry_date),
+  };
+}
+
+/** Back fields as rendered: the card number redacted. */
+function redactedBack(src: { card_number?: string }): OcrBackValues {
+  return {
+    card_number: src.card_number ? redactRef("card_number", src.card_number) : OCR_UNREAD,
+  };
+}
+
+/**
+ * Document details for the customer twins (display-only). Kept OCR fields
+ * win per side; DL ground truth fills sides OCR never read, labeled as
+ * fixture fallback (FALLBACK is FIXTURE_LABELED). Null when neither exists
+ * (passport runs without OCR keep the report shape unchanged).
+ */
+function ocrDetailsFor(session: Session): OcrDetails | null {
+  let front: OcrFrontValues | null = null;
+  let frontSource: OcrSource = "ocr";
+  let back: OcrBackValues | null = null;
+  let backSource: OcrSource = "ocr";
+  for (const ref of session.captures) {
+    const fields = session.ocrByCapture[ref];
+    if (!fields) continue;
+    if (fields.side === "front") front = redactedFront(fields);
+    else back = redactedBack(fields);
+  }
+  const fixture = loadFixture(session.fixture);
+  if (fixture.kind === "au_dl") {
+    if (!front) {
+      front = redactedFront(fixture.front);
+      frontSource = "fixture-fallback";
+    }
+    if (!back && fixture.back) {
+      back = redactedBack(fixture.back);
+      backSource = "fixture-fallback";
+    }
+  }
+  if (!front && !back) return null;
+  return {
+    front: front ? { source: frontSource, values: front } : null,
+    back: back ? { source: backSource, values: back } : null,
+  };
 }
 
 /** Near-miss resolution echo: heard form, resolved choice, spoken echo. */
@@ -607,8 +719,10 @@ async function doKeep(
     };
   }
   session.captures.push(session.pendingCapture);
+  if (session.pendingOcr) session.ocrByCapture[session.pendingCapture] = session.pendingOcr;
   session.pendingCapture = null;
   session.pendingVerdict = null;
+  session.pendingOcr = null;
   if (echo !== null) {
     pushTurn(session, "you", `${echo.heard} → ${echo.resolved}`);
     pushTurn(session, "system", echo.text, "progress");
@@ -648,6 +762,7 @@ async function doRetake(
   }
   session.pendingCapture = null;
   session.pendingVerdict = null;
+  session.pendingOcr = null;
   // Fresh guidance episode: the next lock verdicts from new samples only,
   // the next arm needs a fresh clean run, and the offer runway restarts
   // (the once-per-stage offer latch itself is kept).
@@ -796,6 +911,7 @@ app.post("/api/session/:id/signal", async (c) => {
     session.lastSample = null;
     session.pendingCapture = null;
     session.pendingVerdict = null;
+    session.pendingOcr = null;
     resetArmState(session);
   }
 
@@ -972,28 +1088,81 @@ app.post("/api/session/:id/telemetry", (c) => handleTelemetry(c));
 app.post("/api/session/:id/sample", (c) => handleTelemetry(c));
 
 /**
+ * Largest lock crop the server will OCR (chars of data URL). Oversize
+ * crops skip OCR; the lock still succeeds — never a 4xx for OCR.
+ * Layered caps: the client drops grabs past 300k early; the server
+ * tolerates larger embeds up to here.
+ */
+export const MAX_CROP_CHARS = 500_000;
+
+/**
  * Lock the current frame: stores an opaque ref behind the retake pair.
  * Shared by the tap/auto-fire POST path and the "lock now" voice path, so
  * every lock lands on the same confirm card (verdict + retake pair). A
  * lock supersedes any arm: the clean run and veto streak reset, and the
- * next arm needs a fresh run after keep/retake.
+ * next arm needs a fresh run after keep/retake. Doc locks OCR the posted
+ * crop server-side; selfie/challenge locks never attempt OCR, and crop
+ * bytes drop immediately after (refs + fields only, never logged).
  */
 async function performLock(
   session: Session,
   id: string,
   heard: string | null,
+  crop: unknown = null,
 ) {
   // Idempotent behind an open pair: a racing second lock holds the first
   // card open instead of overwriting its ref — same step, same verdict.
   if (session.pendingCapture !== null) {
     const held = await stepBody(session, id, null, false);
-    return { ...held, verdict: session.pendingVerdict };
+    // A lock racing the first lock's OCR await lands before pendingVerdict
+    // is set: recompute rather than serve a null verdict.
+    return {
+      ...held,
+      verdict:
+        session.pendingVerdict ??
+        qualityVerdict(session.flow.stage, session.lastSample),
+    };
   }
   const ref = lockRef(session);
   session.pendingCapture = ref;
   session.cleanStreak = 0;
   session.vetoStreak = 0;
   if (heard !== null) pushTurn(session, "you", heard);
+  // DL fixtures only: passport photo pages share the doc stages but are
+  // not licences, so DL-prompted OCR must never read them.
+  const isDocSide =
+    session.flow.stage === "awaiting_doc_front"
+      ? "front"
+      : session.flow.stage === "awaiting_doc_back"
+        ? "back"
+        : null;
+  const ocrSide =
+    isDocSide !== null && loadFixture(session.fixture).kind === "au_dl"
+      ? isDocSide
+      : null;
+  const stageAtLock = session.flow.stage;
+  if (ocrSide !== null && typeof crop === "string" && crop.length > 0) {
+    if (crop.length <= MAX_CROP_CHARS && crop.startsWith("data:image/")) {
+      try {
+        const ocr = await ocrCrop(
+          { side: ocrSide, imageBase64: crop },
+          { env: processEnv() },
+        );
+        // Staleness guard: a keep/retake/deny/signal that landed during the
+        // await owns the state now — abandon the lock, discard the read.
+        if (
+          session.pendingCapture !== ref ||
+          session.flow.stage !== stageAtLock
+        ) {
+          return stepBody(session, id, null, false);
+        }
+        if (ocr.fields) session.pendingOcr = ocr.fields;
+      } catch {
+        // ocrCrop never throws by contract; the lock lands regardless.
+      }
+    }
+    // Oversize/non-image crops: OCR skipped, lock succeeds (labeled fallback).
+  }
   // Verdict turn first, then the fixed keep/retake question: two separate
   // turns, so the non-visual review path hears quality before the choice.
   const verdict = qualityVerdict(session.flow.stage, session.lastSample);
@@ -1016,16 +1185,27 @@ async function performLock(
 }
 
 /** Lock the current frame: stores an opaque ref behind the retake pair. */
-async function handleLock(c: {
-  req: { param: (name: string) => string };
-  json: (body: unknown, status?: number) => Response;
-}) {
+async function handleLock(
+  c: {
+    req: { param: (name: string) => string; json?: () => Promise<unknown> };
+    json: (body: unknown, status?: number) => Response;
+  },
+  preParsedCrop?: unknown,
+) {
   const session = sessions.get(c.req.param("id"));
   if (!session) return c.json({ error: "unknown_session" }, 404);
   if (!CAPTURE_STAGES.has(session.flow.stage)) {
     return c.json({ error: "wrong_stage", stage: session.flow.stage }, 409);
   }
-  return c.json(await performLock(session, c.req.param("id"), null));
+  let crop: unknown = preParsedCrop;
+  if (crop === undefined && c.req.json) {
+    const body = ((await c.req.json().catch(() => ({}))) ?? {}) as Record<
+      string,
+      unknown
+    >;
+    crop = body.crop ?? null;
+  }
+  return c.json(await performLock(session, c.req.param("id"), null, crop ?? null));
 }
 
 app.post("/api/session/:id/lock", (c) => handleLock(c));
@@ -1071,7 +1251,7 @@ app.post("/api/session/:id/capture", async (c) => {
     const retaken = await doRetake(session, c.req.param("id"), null);
     return c.json(retaken.body, retaken.status);
   }
-  if (action === "lock") return handleLock(c);
+  if (action === "lock") return handleLock(c, (body as { crop?: unknown }).crop);
   return c.json({ error: "unknown_action", action }, 400);
 });
 
@@ -1129,6 +1309,7 @@ const RESULT_STYLE = `:root { color-scheme: dark; }
   h1 { font-size:1.3rem; margin:0 0 .2rem; letter-spacing:-.01em; }
   .sub { color:#9AA3B2; font-size:.85rem; margin:0 0 1.5rem; }
   h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.1em; color:#8b93a1; margin:1.4rem 0 .3rem; }
+  h3 { font-size:.72rem; text-transform:uppercase; letter-spacing:.1em; color:#8b93a1; margin:1rem 0 .3rem; }
   ul { list-style:none; padding:0; margin:0; }
   li { display:grid; grid-template-columns:1.1rem 14rem 1fr; gap:.7rem; padding:.3rem 0;
        border-bottom:1px solid #1b2230; font-size:.82rem; align-items:baseline; }
@@ -1143,6 +1324,46 @@ const RESULT_STYLE = `:root { color-scheme: dark; }
   details ol { list-style:decimal; padding-left:1.4rem; }
   details li { display:list-item; border-bottom:1px solid #1b2230; padding:.3rem 0; }
   .note { color:#8b93a1; font-size:.78rem; margin-top:2rem; border-top:1px solid #1b2230; padding-top:1rem; }`;
+
+/** Source label per side: OCR reads plain, fixture fills labeled as fallback. */
+function ocrSourceLabel(source: OcrSource): string {
+  return source === "ocr" ? "ocr" : "fixture fallback — OCR unavailable";
+}
+
+/**
+ * Document details section from the same report object as the JSON twin.
+ * Every value esc()aped; numbers arrive pre-redacted (redactRef at attach).
+ */
+function ocrSectionHtml(ocr: OcrDetails): string {
+  const sides: string[] = [];
+  const rows = (entries: Array<[string, string]>): string =>
+    entries
+      .map(
+        ([key, value]) =>
+          `<li><span aria-hidden="true">•</span> <span class="id">${esc(key)}</span> <span class="ev">${esc(value)}</span></li>`,
+      )
+      .join("");
+  if (ocr.front) {
+    sides.push(
+      `<h3>front · ${esc(ocrSourceLabel(ocr.front.source))}</h3><ul>${rows([
+        ["licence_number", ocr.front.values.licence_number],
+        ["full_name", ocr.front.values.full_name],
+        ["dob", ocr.front.values.dob],
+        ["address", ocr.front.values.address],
+        ["expiry_date", ocr.front.values.expiry_date],
+      ])}</ul>`,
+    );
+  }
+  if (ocr.back) {
+    sides.push(
+      `<h3>back · ${esc(ocrSourceLabel(ocr.back.source))}</h3><ul>${rows([
+        ["card_number", ocr.back.values.card_number],
+      ])}</ul>`,
+    );
+  }
+  if (!sides.length) return "";
+  return `<h2>document details</h2>${sides.join("")}`;
+}
 
 /** Decided run: verdict, tier, failures-first evidence, limitations, attack surface. */
 function resultDecidedPage(
@@ -1175,6 +1396,7 @@ function resultDecidedPage(
     .join("");
   const hypotheses = audit.hypotheses.map((h) => `<li>${esc(h)}</li>`).join("");
   const providerLabel = audit.provider === "meta" ? "Spark" : "local templates";
+  const ocrSection = report.ocr ? ocrSectionHtml(report.ocr) : "";
   return `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -1187,6 +1409,7 @@ function resultDecidedPage(
 <div id="tiermsg">${esc(report.userMessage)}</div>
 <h2>checks — failures first</h2>
 <ul>${checks}</ul>
+${ocrSection}
 <h2>limitations</h2>
 <ul>${limitations}</ul>
 <h2>attack surface</h2>
@@ -2038,7 +2261,9 @@ async function doLock() {
   lockBtn.disabled = true;
   const lockSession = sessionId;
   try {
-    const res = await post('/api/session/' + sessionId + '/lock', {});
+    const docStage = captureStage === 'awaiting_doc_front' || captureStage === 'awaiting_doc_back';
+    const crop = docStage ? takeCrop() : null;
+    const res = await post('/api/session/' + sessionId + '/lock', crop ? { crop } : {});
     if (sessionId !== lockSession) return;   // restart won the race: drop it
     await onLocked(res, lockSession);
   } catch (err) {
@@ -2214,6 +2439,34 @@ function takeSnapshot() {
     if (!ctx) return null;
     ctx.drawImage(videoEl, 0, 0, w, h);
     return snap.toDataURL('image/jpeg', 0.82);
+  } catch {
+    return null;
+  }
+}
+
+// Locked-crop upload: the only pixel flow to the server. Doc stages only,
+// downscaled and capped; selfie/challenge locks post bare (no pixels), and
+// an over-cap grab posts bare too — the lock always succeeds and the
+// customer view degrades to its labeled fallback. Never viewfinder frames:
+// this grab fires once per lock, never from the sampling loop.
+const CROP_MAX_DIM = 768;
+const CROP_MAX_CHARS = 300000;
+const cropCanvas = document.createElement('canvas');
+function takeCrop() {
+  try {
+    if (captureStream === null || videoEl.readyState < 2) return null;
+    const w = videoEl.videoWidth || 0;
+    const h = videoEl.videoHeight || 0;
+    if (!w || !h) return null;
+    const scale = Math.min(1, CROP_MAX_DIM / Math.max(w, h));
+    cropCanvas.width = Math.max(2, Math.round(w * scale));
+    cropCanvas.height = Math.max(2, Math.round(h * scale));
+    const ctx = cropCanvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(videoEl, 0, 0, cropCanvas.width, cropCanvas.height);
+    const url = cropCanvas.toDataURL('image/jpeg', 0.72);
+    if (typeof url !== 'string' || url.length > CROP_MAX_CHARS) return null;
+    return url;
   } catch {
     return null;
   }

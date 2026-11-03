@@ -235,8 +235,12 @@ test("stand-in path locks with a fixture label and generic verdict", async () =>
   assert.ok(html.includes("standin-label"), "fixture label styling");
   assert.ok(html.includes("Stand-in capture"), "fixture label instead of photo");
   assert.ok(html.includes("pendingStandin"), "stand-in review state");
-  const lockPosts = html.split("'/lock', {}").length - 1;
-  assert.ok(lockPosts >= 2, `live lock and stand-in lock both post /lock (found ${lockPosts})`);
+  // Live locks carry the locked crop; only the pixel-less stand-in posts bare.
+  const bareLockPosts = html.split("'/lock', {}").length - 1;
+  assert.equal(bareLockPosts, 1, `stand-in lock posts bare {} (found ${bareLockPosts})`);
+  assert.ok(html.includes("takeCrop"), "live lock grabs a downscaled crop");
+  assert.ok(html.includes("crop ? { crop } : {}"), "live lock attaches the crop when present");
+  assert.ok(html.includes("CROP_MAX_CHARS"), "crop capped client-side");
 });
 
 test("focus moves to the card heading and back to the spoken line", async () => {
