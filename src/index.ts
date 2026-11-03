@@ -25,14 +25,14 @@ import { decide, runChecks } from "./checks.js";
 import type { CheckResult, Decision } from "./checks.js";
 import { verifyDVS } from "./dvs.js";
 import { loadFixture } from "./fixtures.js";
-import { CAPTURE_STAGES, captureInstruct, say, signal, startRun, withPanel } from "./flow.js";
+import { AUTO_CAPTURE_BEAT, CAPTURE_STAGES, captureInstruct, matchIntent, PROACTIVE_LOCK_OFFER, REARM_TEXT, say, signal, startRun, VETO_DIAGNOSE_TEXT, withPanel } from "./flow.js";
 import type { FlowState, Stage } from "./flow.js";
 import { buildMeasurements } from "./measurements.js";
 import { spendTotal } from "./meta-models.js";
 import { generatePanel } from "./panels.js";
 import { configuredProviders, narrate, segment, templateNarration } from "./providers.js";
 import type { ProviderName } from "./providers.js";
-import { coach, FAULT_KEYS, faultKey, isLockReady } from "./telemetry.js";
+import { CLEAN_RUN_ARM, coach, FAULT_KEYS, faultKey, isArmClean, isLockReady } from "./telemetry.js";
 import type { FaultKey, Telemetry } from "./telemetry.js";
 import { tier } from "./fraud.js";
 import type { Tier } from "./fraud.js";
@@ -186,7 +186,20 @@ interface Session {
   /** Locked capture awaiting Keep/Retake (opaque server-generated ref). */
   pendingCapture: string | null;
   captureSeq: number;
+  /** Consecutive arm-clean samples this stage (drives auto-capture arming). */
+  cleanStreak: number;
+  /** Telemetry samples seen this stage (drives the proactive Lock offer). */
+  samplesThisStage: number;
+  /** True once a clean run armed this stage (suppresses the offer). */
+  armedThisStage: boolean;
+  /** True once the proactive Lock offer fired this stage (fires once). */
+  offerMade: boolean;
+  /** Consecutive arm vetoes (diagnoses after 3, resets on lock/advance). */
+  vetoStreak: number;
 }
+
+/** Telemetry samples without an arm (~12 s at 5 Hz) before the proactive Lock offer. */
+export const OFFER_AFTER_SAMPLES = 60;
 
 const sessions = new Map<string, Session>();
 
@@ -215,6 +228,20 @@ function purgeCaptures(session: Session): void {
   session.faultCounts = zeroFaultCounts();
   session.lastCoachText = null;
   session.lastSample = null;
+  resetArmState(session);
+}
+
+/**
+ * Fresh arm episode: the clean run, per-stage sample count, offer latch,
+ * and veto streak never leak across stages, deny/revoke, or camera loss.
+ * Lock/retake/wait reset narrower slices inline (the stage continues).
+ */
+function resetArmState(session: Session): void {
+  session.cleanStreak = 0;
+  session.samplesThisStage = 0;
+  session.armedThisStage = false;
+  session.offerMade = false;
+  session.vetoStreak = 0;
 }
 
 function newSession(fixtureId: string): Session {
@@ -231,6 +258,11 @@ function newSession(fixtureId: string): Session {
     lastSample: null,
     pendingCapture: null,
     captureSeq: 0,
+    cleanStreak: 0,
+    samplesThisStage: 0,
+    armedThisStage: false,
+    offerMade: false,
+    vetoStreak: 0,
   };
 }
 
@@ -343,6 +375,13 @@ const LOCK_TEXT: Record<string, string> = {
 /** Voice equivalents for the retake pair while a lock is pending. */
 const KEEP_UTTERANCE = /^\s*keep(\s+it)?\s*\.?\s*$/i;
 const RETAKE_UTTERANCE = /^\s*(retake|take (it |that )?again)\s*\.?\s*$/i;
+/**
+ * Manual-lock voice path: fires the lock immediately on capture stages.
+ * Bare command plus natural please/it-now wrappers; anchored so negations
+ * ("don't lock now") never match and still read as deny first.
+ */
+const LOCK_NOW_UTTERANCE =
+  /^\s*(please\s+)?lock(\s+it(\s+now)?|\s+now(\s+please)?|\s+this)?(\s+please)?\s*\.?\s*$/i;
 
 /** Near-miss targets: the same closed pair phrasing, typo-tolerant. */
 const KEEP_TARGETS = ["keep", "keep it"];
@@ -569,6 +608,7 @@ async function doKeep(
   if (session.flow.stage !== before) {
     session.lastCoachText = null;
     session.lastSample = null;
+    resetArmState(session);
   }
   pushTurn(
     session,
@@ -595,8 +635,12 @@ async function doRetake(
     return { status: 409 as const, body: { error: "nothing_to_retake" } };
   }
   session.pendingCapture = null;
-  // Fresh guidance episode: the next lock verdicts from new samples only.
+  // Fresh guidance episode: the next lock verdicts from new samples only,
+  // the next arm needs a fresh clean run, and the offer runway restarts
+  // (the once-per-stage offer latch itself is kept).
   session.lastSample = null;
+  session.cleanStreak = 0;
+  session.samplesThisStage = 0;
   if (echo !== null) {
     pushTurn(session, "you", `${echo.heard} → ${echo.resolved}`);
     pushTurn(session, "system", echo.text, "progress");
@@ -624,6 +668,14 @@ app.post("/api/session/:id/say", async (c) => {
   // Near-misses resolve with an echo; low-confidence re-asks hold the
   // pair open without touching the lock turn.
   if (session.pendingCapture !== null) {
+    // A lock-now or wait aimed at an open pair holds it open: no re-lock,
+    // no hold-off turn, no nudge — the pair is already the locked frame
+    // and its question stays up. First, so near-miss resolution never
+    // splits "wait" (nudge) from "hold on" (hold-off turn).
+    if (LOCK_NOW_UTTERANCE.test(utterance) || matchIntent(utterance) === "wait") {
+      pushTurn(session, "you", utterance);
+      return c.json(await stepBody(session, c.req.param("id"), null, false));
+    }
     const resolved = resolvePair(utterance);
     if (resolved.kind === "keep" || resolved.kind === "retake") {
       const exact =
@@ -672,14 +724,28 @@ app.post("/api/session/:id/say", async (c) => {
     pushTurn(session, "you", utterance);
     return c.json(await stepBody(session, c.req.param("id"), null, false));
   }
+  // Manual-lock voice path: "lock now" on a capture stage with no open
+  // pair fires immediately through the same confirm landing as a tap
+  // (quality verdict + retake pair), superseding any arm.
+  if (
+    session.pendingCapture === null &&
+    LOCK_NOW_UTTERANCE.test(utterance) &&
+    CAPTURE_STAGES.has(session.flow.stage)
+  ) {
+    return c.json(await performLock(session, c.req.param("id"), utterance));
+  }
   const before = session.flow.stage;
   const next = say(session.flow, utterance);
   session.flow = next;
   // Full deny purge: captures are deleted on deny/revoke, not flagged.
   if (next.last_intent === "deny") purgeCaptures(session);
+  // Voice veto: "wait" cancels the arm (a fresh clean run must re-arm)
+  // while coaching resumes underneath.
+  if (next.last_intent === "wait") session.cleanStreak = 0;
   if (next.stage !== before) {
     session.lastCoachText = null;
     session.lastSample = null;
+    resetArmState(session);
   }
 
   pushTurn(session, "you", utterance);
@@ -698,7 +764,10 @@ app.post("/api/session/:id/signal", async (c) => {
   session.flow = next;
   // A dead camera invalidates earlier frames: the stand-in lock verdicts
   // generic, never from a stale live sample.
-  if (event === "camera_denied") session.lastSample = null;
+  if (event === "camera_denied") {
+    session.lastSample = null;
+    resetArmState(session);
+  }
   // Captures attach on backend capture events only (speech never captures).
   if (next.stage !== before) {
     if (event === "front_captured") session.captures.push(`front:${session.fixture}`);
@@ -709,6 +778,7 @@ app.post("/api/session/:id/signal", async (c) => {
     session.lastCoachText = null;
     session.lastSample = null;
     session.pendingCapture = null;
+    resetArmState(session);
   }
 
   pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
@@ -744,6 +814,7 @@ async function handleTelemetry(c: {
     const next = signal(session.flow, "camera_denied");
     session.flow = next;
     session.lastSample = null;
+    resetArmState(session);
     pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
     const step = await stepBody(session, c.req.param("id"), null, false);
     return c.json({
@@ -753,6 +824,8 @@ async function handleTelemetry(c: {
       fault: null,
       faultCounts: { ...session.faultCounts },
       moireFlags: session.moireFlags,
+      cleanStreak: 0,
+      armed: false,
     });
   }
   const sample: Telemetry = {
@@ -763,6 +836,7 @@ async function handleTelemetry(c: {
     dark: num(body.dark),
     blur: num(body.blur),
     moire: num(body.moire),
+    motion: num(body.motion),
     screenshot: body.screenshot as Telemetry["screenshot"],
     missingBack: body.missingBack as Telemetry["missingBack"],
   };
@@ -780,11 +854,72 @@ async function handleTelemetry(c: {
   // Moiré-flag seam for the deferred fraud-matrix inputs (§7).
   if (fault === "moire") session.moireFlags += 1;
 
+  // Auto-capture arming: the clean run counts arm-clean samples (no fault,
+  // no motion). Coaching and arming agree by construction — an armed frame
+  // is always fault-free, and a vetoed run always speaks its re-arm line.
+  // Stray samples behind an open pair never rebuild the run.
+  const inCapture = CAPTURE_STAGES.has(session.flow.stage);
+  const pairOpen = session.pendingCapture !== null;
+  const wasArmed = session.cleanStreak >= CLEAN_RUN_ARM;
+  const armClean = isArmClean(sample);
+  session.cleanStreak = armClean && !pairOpen ? session.cleanStreak + 1 : 0;
+  // Strays behind an open pair are not framing effort: they count toward
+  // nothing (the clean run above already ignores them the same way).
+  if (!pairOpen) session.samplesThisStage += 1;
+  const armed =
+    session.cleanStreak >= CLEAN_RUN_ARM && !pairOpen && inCapture;
+  if (armed) session.armedThisStage = true;
+  const crossing = armed && session.cleanStreak === CLEAN_RUN_ARM;
+  // A veto ends an armed run: motion or a fresh fault cancels the arm and
+  // speaks the re-arm line (diagnosing after 3); the client holds its own
+  // fire clock silent and lets this turn do the talking.
+  const veto = wasArmed && !armClean && !pairOpen && inCapture;
+  const offerDue =
+    inCapture &&
+    !pairOpen &&
+    !session.armedThisStage &&
+    !session.offerMade &&
+    session.samplesThisStage >= OFFER_AFTER_SAMPLES;
+
   const consecutive = fault === null ? 0 : session.faultCounts[fault];
-  const fired = withPanel(coach({ ...sample, turns: consecutive }), session.flow.stage);
+  let fired = withPanel(
+    coach({ ...sample, turns: consecutive }),
+    session.flow.stage,
+  );
+  // Arm transitions always announce — even a back-to-back beat — because
+  // each one carries new state (armed, vetoed, offered), never a repeat.
+  let armTransition = false;
+  if (veto) {
+    session.vetoStreak += 1;
+    const diagnose = session.vetoStreak >= 3;
+    if (diagnose) session.vetoStreak = 0;
+    fired = withPanel(
+      {
+        kind: "progress",
+        text: diagnose ? VETO_DIAGNOSE_TEXT : REARM_TEXT,
+      },
+      session.flow.stage,
+    );
+    armTransition = true;
+  } else if (crossing) {
+    fired = withPanel(
+      { kind: "progress", text: AUTO_CAPTURE_BEAT },
+      session.flow.stage,
+    );
+    armTransition = true;
+  } else if (offerDue) {
+    session.offerMade = true;
+    fired = withPanel(
+      { kind: "progress", text: PROACTIVE_LOCK_OFFER },
+      session.flow.stage,
+    );
+    armTransition = true;
+  }
   const lockReady = isLockReady(sample);
-  const announced = fired.text !== session.lastCoachText;
-  if (announced) {
+  const announced = armTransition ? true : fired.text !== session.lastCoachText;
+  // Strays behind an open pair never touch the confirm turn or transcript:
+  // the verdict + question stay up while the pair is open.
+  if (announced && !pairOpen) {
     session.lastCoachText = fired.text;
     session.flow = { ...session.flow, last_turn: fired };
     pushTurn(session, "system", fired.text, fired.kind);
@@ -800,24 +935,36 @@ async function handleTelemetry(c: {
     fault,
     faultCounts: { ...session.faultCounts },
     moireFlags: session.moireFlags,
+    cleanStreak: session.cleanStreak,
+    armed,
   });
 }
 
 app.post("/api/session/:id/telemetry", (c) => handleTelemetry(c));
 app.post("/api/session/:id/sample", (c) => handleTelemetry(c));
 
-/** Lock the current frame: stores an opaque ref behind the retake pair. */
-async function handleLock(c: {
-  req: { param: (name: string) => string };
-  json: (body: unknown, status?: number) => Response;
-}) {
-  const session = sessions.get(c.req.param("id"));
-  if (!session) return c.json({ error: "unknown_session" }, 404);
-  if (!CAPTURE_STAGES.has(session.flow.stage)) {
-    return c.json({ error: "wrong_stage", stage: session.flow.stage }, 409);
+/**
+ * Lock the current frame: stores an opaque ref behind the retake pair.
+ * Shared by the tap/auto-fire POST path and the "lock now" voice path, so
+ * every lock lands on the same confirm card (verdict + retake pair). A
+ * lock supersedes any arm: the clean run and veto streak reset, and the
+ * next arm needs a fresh run after keep/retake.
+ */
+async function performLock(
+  session: Session,
+  id: string,
+  heard: string | null,
+) {
+  // Idempotent behind an open pair: a racing second lock holds the first
+  // card open instead of overwriting its ref — no new surface, same step.
+  if (session.pendingCapture !== null) {
+    return await stepBody(session, id, null, false);
   }
   const ref = lockRef(session);
   session.pendingCapture = ref;
+  session.cleanStreak = 0;
+  session.vetoStreak = 0;
+  if (heard !== null) pushTurn(session, "you", heard);
   // Verdict turn first, then the fixed keep/retake question: two separate
   // turns, so the non-visual review path hears quality before the choice.
   const verdict = qualityVerdict(session.flow.stage, session.lastSample);
@@ -834,8 +981,21 @@ async function handleLock(c: {
   };
   session.flow = { ...session.flow, last_turn: fired };
   pushTurn(session, "system", text, fired.kind);
-  const body = await stepBody(session, c.req.param("id"), null, false);
-  return c.json({ ...body, verdict });
+  const body = await stepBody(session, id, null, false);
+  return { ...body, verdict };
+}
+
+/** Lock the current frame: stores an opaque ref behind the retake pair. */
+async function handleLock(c: {
+  req: { param: (name: string) => string };
+  json: (body: unknown, status?: number) => Response;
+}) {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "unknown_session" }, 404);
+  if (!CAPTURE_STAGES.has(session.flow.stage)) {
+    return c.json({ error: "wrong_stage", stage: session.flow.stage }, 409);
+  }
+  return c.json(await performLock(session, c.req.param("id"), null));
 }
 
 app.post("/api/session/:id/lock", (c) => handleLock(c));
@@ -1223,6 +1383,21 @@ const CAPTURE_NOUN = {
   awaiting_challenge: 'challenge frames',
   awaiting_selfie: 'selfie',
 };
+// Short stage names for the Lock button's visible label ("Lock front").
+const CAPTURE_SHORT = {
+  awaiting_doc_front: 'front',
+  awaiting_doc_back: 'back',
+  awaiting_challenge: 'challenge',
+  awaiting_selfie: 'selfie',
+};
+// Fixed auto-capture beat, spoken on every arm entry (bypasses narration so
+// the wording stays fixed even on the keyed path). Twin of
+// AUTO_CAPTURE_BEAT in src/flow.ts — keep byte-identical.
+const BEAT_TWIN = 'Perfect — hold still, capturing.';
+// Command words heard by the capture-stage listener (twins of the server
+// matchers — LOCK_NOW_UTTERANCE in this file, wait intent in src/flow.ts).
+const LOCK_NOW_HEARD = /^\\s*(please\\s+)?lock(\\s+it(\\s+now)?|\\s+now(\\s+please)?|\\s+this)?(\\s+please)?\\s*\\.?\\s*$/i;
+const WAIT_HEARD = /\\bwait\\b|\\bhold\\s+on\\b|\\bhold\\s+off\\b/i;
 // Snapshot-failed fallback: the card still pairs a generic verdict caption
 // with Keep/Retake when the frame grab fails on live video.
 const GENERIC_VERDICT = {
@@ -1259,6 +1434,19 @@ let sampleFails = 0;
 let sampleDownUntil = 0;
 let sampleTimer = null;
 let lockBusy = false;
+// Auto-capture arm state: the server arms the clean run (4 consecutive
+// arm-clean samples); the client runs the 1.5 s fire clock. A vetoed run
+// cancels the clock silently and lets the server's re-arm turn speak.
+let armed = false;
+let armTimer = null;
+// Bumped when a wait/lock utterance goes out: in-flight ticks that armed
+// before the veto retire instead of re-entering the arm.
+let armGen = 0;
+// Capture-stage command listener ("lock now" / "wait"), separate from the
+// turn listener: silence restarts it quietly (never a re-ask), and the
+// watchdog suspends entirely while Armed — stillness is the answer.
+let captureRec = null;
+let captureWatchdog = null;
 // TTS/SR arbitration: keyboard-first use signals a screen reader, and
 // self-voicing yields to its live-region announcements; the Voice toggle
 // overrides (null = auto, true = forced on, false = forced off).
@@ -1627,6 +1815,11 @@ function showCapture(on, stage) {
   if (on && stage && CAPTURE_LABEL[stage]) {
     captureWrap.setAttribute('aria-label', CAPTURE_LABEL[stage]);
     captureMeta.textContent = 'capturing…';
+    // Stage-context Lock naming: the visible label and accessible name
+    // carry the capture ("Lock front" / "Lock document front capture"),
+    // and the button is keyboard-operable like any native control.
+    if (CAPTURE_SHORT[stage]) lockBtn.textContent = 'Lock ' + CAPTURE_SHORT[stage];
+    if (CAPTURE_NOUN[stage]) lockBtn.setAttribute('aria-label', 'Lock ' + CAPTURE_NOUN[stage] + ' capture');
   }
 }
 
@@ -1674,6 +1867,8 @@ function stopCapture() {
   sampleFails = 0;
   setCoach('');
   clearReviewState();
+  cancelArmSilent();
+  stopCaptureListener();
   stopCaptureTracks();
   captureStage = null;
   if (sampleTimer !== null) { clearInterval(sampleTimer); sampleTimer = null; }
@@ -1685,8 +1880,17 @@ function stopCapture() {
 
 async function ensureCapture(stage) {
   showCapture(true, stage);
+  // Retire any turn listener still running — its late result must not
+  // double-feed a capture turn, and two recognizers must never overlap.
+  voiceGen += 1;
+  if (activeRecognition) {
+    try { activeRecognition.abort(); } catch { /* already gone */ }
+    activeRecognition = null;
+  }
   if (captureStream !== null && captureStage === stage) {
     sampling = true;
+    prevLuma = null;   // fresh motion baseline: the held frame is stale
+    startCaptureListener();
     return;
   }
   stopCaptureTracks();
@@ -1720,8 +1924,13 @@ async function startCapture(stage) {
   sampling = true;
   sampleInflight = false;
   sampleFails = 0;
+  prevLuma = null;
   if (sampleTimer === null) sampleTimer = setInterval(sampleTick, 200);
+  // Operable fallback: Lock stays enabled for the whole stage — a tap
+  // fires immediately even on a faulted frame (generic verdict), so a run
+  // that never arms can still complete by hand.
   lockBtn.disabled = pendingRef !== null;
+  startCaptureListener();
 }
 
 /**
@@ -1732,6 +1941,8 @@ async function startCapture(stage) {
 async function cameraDenied(stage) {
   stopCaptureTracks();
   sampling = false;
+  cancelArmSilent();
+  stopCaptureListener();
   captureMeta.textContent = 'camera unavailable — run parked';
   let parked = null;
   try {
@@ -1783,35 +1994,20 @@ standinBtn.addEventListener('click', async () => {
   }
 });
 
-lockBtn.addEventListener('click', async () => {
+async function doLock() {
   if (lockBusy || !sessionId) return;
+  armGen += 1;   // retire pre-lock arming ticks: no spurious beat + haptic
   lockBusy = true;
   lockBtn.disabled = true;
   const lockSession = sessionId;
   try {
     const res = await post('/api/session/' + sessionId + '/lock', {});
     if (sessionId !== lockSession) return;   // restart won the race: drop it
-    sampling = false;   // hold the frame while Keep/Retake is open
-    pendingRef = res.pendingCapture;
-    // Snapshot between the race guard and the card render; a failed grab
-    // still offers the pair with a generic verdict caption.
-    pendingSnapshot = takeSnapshot();
-    pendingStandin = false;
-    pendingVerdict = pendingSnapshot !== null
-      ? (res.verdict || GENERIC_VERDICT[captureStage] || 'Captured.')
-      : (GENERIC_VERDICT[captureStage] || 'Captured.');
-    // Card first, then the verdict turn, then the keep/retake question —
-    // separate turns, always in that order; the flash lands with the
-    // question while the card itself is the immediate tap feedback.
-    renderTranscript(res.transcript);
-    renderPanel(res.panel, res.text);
-    focusConfirmHeading();
-    setSpoken(pendingVerdict, false);
-    await speak(pendingVerdict);
-    if (sessionId !== lockSession) return;   // restart won the race: drop it
-    setSpoken(res.text, false);
-    await announceLock(res.text);
+    await onLocked(res, lockSession);
   } catch (err) {
+    // A failed lock always disarms (a later clean run re-arms); the stage
+    // may have moved on, in which case the listener restart below no-ops.
+    disarmToCoaching();
     // Wrong-stage means a stale in-flight lock: stay disabled instead of
     // inviting another failing tap. Other failures re-enable for a retry.
     if (err && err.status === 409) {
@@ -1823,7 +2019,77 @@ lockBtn.addEventListener('click', async () => {
   } finally {
     lockBusy = false;
   }
-});
+}
+
+// Manual lock supersedes any arm: the clock cancels silently and the
+// verdict turn speaks instead of a re-arm line.
+lockBtn.addEventListener('click', () => { cancelArmSilent(); doLock(); });
+
+/**
+ * Shared confirm landing for tap and auto-fire locks: card first, then
+ * the verdict turn, then the keep/retake question — separate turns,
+ * always in that order; the flash lands with the question while the card
+ * itself is the immediate tap feedback.
+ */
+async function onLocked(res, lockSession) {
+  sampling = false;   // hold the frame while Keep/Retake is open
+  cancelArmSilent();
+  stopCaptureListener();
+  pendingRef = res.pendingCapture;
+  // Snapshot between the race guard and the card render; a failed grab
+  // still offers the pair with a generic verdict caption.
+  pendingSnapshot = takeSnapshot();
+  pendingStandin = false;
+  pendingVerdict = pendingSnapshot !== null
+    ? (res.verdict || GENERIC_VERDICT[captureStage] || 'Captured.')
+    : (GENERIC_VERDICT[captureStage] || 'Captured.');
+  renderTranscript(res.transcript);
+  renderPanel(res.panel, res.text);
+  focusConfirmHeading();
+  setSpoken(pendingVerdict, false);
+  await speak(pendingVerdict);
+  if (sessionId !== lockSession) return;   // restart won the race: drop it
+  setSpoken(res.text, false);
+  await announceLock(res.text);
+}
+
+/**
+ * Enter Armed: the double pre-pulse fires, the command listener stays live
+ * so a mid-arm wait/lock-now vetoes through the respond path (it never
+ * re-asks, so silence suspension holds), and the fire clock starts at beat
+ * start — the lock lands ≥1.5 s later only if every sample since stayed
+ * clean with no veto. The beat itself is spoken by the caller (fixed twin,
+ * bypassing narration).
+ */
+function enterArm() {
+  armed = true;
+  armPulse();
+  const armSession = sessionId, armStage = captureStage;
+  if (armTimer !== null) { clearTimeout(armTimer); armTimer = null; }
+  armTimer = setTimeout(() => {
+    armTimer = null;
+    if (armed !== true || sampling !== true || pendingRef !== null) return;
+    if (sessionId !== armSession || captureStage !== armStage) return;
+    // A faulted sample still on its round-trip must disarm, never lock.
+    if (fireFrameVetoed()) { disarmToCoaching(); return; }
+    doLock();
+  }, 1500);
+}
+
+/** Cancel the fire clock without a word (a veto turn speaks instead). */
+function cancelArmSilent() {
+  armed = false;
+  if (armTimer !== null) { clearTimeout(armTimer); armTimer = null; }
+}
+
+/**
+ * Haptic vocabulary (non-visual arm twin): the arm pre-pulse is a DOUBLE
+ * pulse at beat start; the lock tick is a SINGLE short pulse with the
+ * confirm flash. Distinct patterns, never confused.
+ */
+function armPulse() {
+  if (navigator.vibrate) { try { navigator.vibrate([12, 60, 12]); } catch { /* no haptics */ } }
+}
 
 /** Lock flash + haptic (no speech — verdict and question speak separately). */
 function flashLock() {
@@ -1869,6 +2135,12 @@ function clearReviewState() {
 const peek = document.createElement('canvas');
 peek.width = 32;
 peek.height = 32;
+// Prior-sample luma for the motion veto (mean-abs-diff vs this frame).
+let prevLuma = null;
+// Coarse-proxy thresholds [ASSUMPTION — tune on-device against real frames].
+const MOTION_THRESHOLD = 0.06;
+const DOC_EDGE_FLOOR = 0.02;
+const SKEW_ASYMMETRY = 0.45;
 
 // Full-frame snapshot canvas for the confirm card (separate from the peek).
 const snap = document.createElement('canvas');
@@ -1897,34 +2169,87 @@ function takeSnapshot() {
 }
 
 /**
- * Client-side telemetry: brightness/glare/variance over the 32px peek.
- * Only numbers leave the device — no viewfinder frames are uploaded or
- * stored. v1 covers dark/glare/blur live; skew/occlusion/moiré send 0
- * pending the physical-specimen pilot (accepted limitation).
+ * Client-side telemetry: brightness/glare/variance over the 32px peek,
+ * plus coarse doc-presence/skew/motion proxies from edge energy and frame
+ * differencing. Skew/motion feed coaching + the clean run only — guides,
+ * coaching, and voice, never a detection callout; finger/occlusion/moiré
+ * still send 0 pending the physical-specimen pilot (accepted limitation).
+ * Only numbers leave the device — no viewfinder frames are uploaded or stored.
  */
 function videoSample() {
   const ctx = peek.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(videoEl, 0, 0, 32, 32);
   const px = ctx.getImageData(0, 0, 32, 32).data;
   const n = px.length / 4;
+  const luma = new Float32Array(n);
   let sum = 0, sum2 = 0, blown = 0;
   for (let i = 0; i < px.length; i += 4) {
     const l = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) / 255;
+    luma[i / 4] = l;
     sum += l;
     sum2 += l * l;
     if (l > 0.985) blown += 1;
   }
   const mean = sum / n;
   const variance = sum2 / n - mean * mean;
+  const darkFires = mean < 0.22;
+  const blurFires = variance < 0.003;
+  // Edge energy per half (horizontal-neighbor diffs catch card edges and
+  // print): near-zero total energy means no document in frame, strong
+  // left/right asymmetry reads as tilt — both coach via skew ("show all
+  // four corners"). Gated behind exposure: a dark/blurry frame coaches
+  // light first, never straightening. Coarse by design.
+  let edgeL = 0, edgeR = 0;
+  for (let y = 0; y < 32; y++) {
+    for (let x = 0; x < 31; x++) {
+      const d = Math.abs(luma[y * 32 + x] - luma[y * 32 + x + 1]);
+      if (x < 16) edgeL += d; else edgeR += d;
+    }
+  }
+  const edgeTotal = edgeL + edgeR;
+  const edgeDensity = edgeTotal / (32 * 31);
+  const asymmetry = edgeTotal > 0 ? Math.abs(edgeL - edgeR) / edgeTotal : 0;
+  const skew = (!darkFires && !blurFires &&
+    (edgeDensity < DOC_EDGE_FLOOR || asymmetry > SKEW_ASYMMETRY)) ? 0.9 : 0;
+  // Motion veto: mean absolute luma diff vs the prior sample. The first
+  // frame of a stage has no baseline and reads still.
+  let motion = 0;
+  if (prevLuma !== null && prevLuma.length === n) {
+    let diff = 0;
+    for (let k = 0; k < n; k++) diff += Math.abs(luma[k] - prevLuma[k]);
+    motion = diff / n > MOTION_THRESHOLD ? 0.9 : 0;
+  }
+  prevLuma = luma;
   return {
     glare: blown / n > 0.04 ? 0.9 : 0,
-    dark: mean < 0.22 ? 0.9 : 0,
-    blur: variance < 0.003 ? 0.7 : 0,
-    skew: 0,
+    dark: darkFires ? 0.9 : 0,
+    blur: blurFires ? 0.7 : 0,
+    skew,
     finger: 0,
     occlusion: 0,
     moire: 0,
+    motion,
   };
+}
+
+/**
+ * Fire-time veto: re-grade the live frame at the moment of firing, with
+ * the same fault-or-motion bar the server arms on. The motion baseline is
+ * restored so the extra peek never perturbs the 5 Hz cadence; an
+ * unreadable frame vetoes rather than firing blind.
+ */
+function fireFrameVetoed() {
+  const saved = prevLuma;
+  try {
+    const s = videoSample();
+    prevLuma = saved;
+    return ((s.glare ?? 0) > 0.5 || (s.finger ?? 0) > 0.5 || (s.occlusion ?? 0) > 0.5 ||
+      (s.skew ?? 0) > 0.5 || (s.dark ?? 0) > 0.5 || (s.blur ?? 0) > 0.5 ||
+      (s.moire ?? 0) > 0.5 || (s.motion ?? 0) > 0.5);
+  } catch {
+    prevLuma = saved;
+    return true;
+  }
 }
 
 /** ~5Hz coach loop: sample the viewfinder, post telemetry, hold or coach. */
@@ -1939,15 +2264,39 @@ async function sampleTick() {
   sampleInflight = true;
   const tickSession = sessionId;
   const tickStage = captureStage;
+  const tickArm = armGen;
+  const outgoing = videoSample();
+  // Immediate movement veto: a moved frame cancels the fire clock without
+  // waiting for the round-trip; the POST below still resets the server run
+  // so the re-arm turn speaks on arrival.
+  if (armed === true && (outgoing.motion ?? 0) > 0.5) disarmToCoaching();
   try {
-    const res = await post('/api/session/' + sessionId + '/telemetry', videoSample());
+    const res = await post('/api/session/' + sessionId + '/telemetry', outgoing);
     if (sampleFails >= 10) setCoach('');
     sampleFails = 0;
     // A stage advance or restart won the race: stale guidance stays out.
     if (sessionId !== tickSession || captureStage !== tickStage) return;
-    lockBtn.disabled = !(res.lockReady === true) || pendingRef !== null;
+    lockBtn.disabled = pendingRef !== null;
+    // Mid-arm: silence. A vetoed run falls through so the server's re-arm
+    // turn sounds; a clean run says nothing — stillness is the answer.
+    if (armed === true && res.armed === true) return;
+    if (armed === true) disarmToCoaching();
+    // Arm entry speaks the fixed beat twin (never the narration), so every
+    // arm announces its beat even if the crossing response was dropped. A
+    // wait/lock utterance sent mid-flight retires the tick (armGen).
+    if (res.armed === true && pendingRef === null && sampling === true && tickArm === armGen) {
+      setSpoken(BEAT_TWIN, false);
+      setCoach(BEAT_TWIN);
+      renderTranscript(res.transcript);
+      // No panel render: a late arming tick carries stale coaching that
+      // would contradict the spoken beat.
+      enterArm();
+      await speak(BEAT_TWIN);
+      return;
+    }
     // Panels for unfired repeat-episode turns are discarded, not shown.
-    if (res.announced === true) {
+    // Strays landing after the lock never speak over the confirm card.
+    if (res.announced === true && pendingRef === null && sampling === true) {
       setSpoken(res.text, false);
       setCoach(res.text);
       renderTranscript(res.transcript);
@@ -1972,7 +2321,25 @@ async function drive(step) {
     listenEl.textContent = 'Something went wrong — press Start to begin again.';
     return;
   }
+  // A fresh lock via the "lock now" voice path lands on the same confirm
+  // card as a tap: snapshot first, then verdict, then the question.
+  const voiceLock = pendingRef == null && step.pendingCapture != null &&
+    CAPTURE_SIGNAL[step.stage] && typeof step.verdict === 'string';
   pendingRef = step.pendingCapture ?? null;
+  if (voiceLock === true) {
+    sampling = false;
+    cancelArmSilent();
+    stopCaptureListener();
+    armGen += 1;
+    pendingSnapshot = takeSnapshot();
+    pendingStandin = false;   // live viewfinder, like the tap path — a failed
+    // grab still pairs the generic verdict, never the stand-in label
+    pendingVerdict = pendingSnapshot !== null
+      ? (step.verdict || GENERIC_VERDICT[step.stage] || 'Captured.')
+      : (GENERIC_VERDICT[step.stage] || 'Captured.');
+    lockBtn.disabled = true;
+    standinBtn.hidden = true;
+  }
   // The pair closed (keep/retake/deny): retire the card, clear the snapshot,
   // and focus back at the spoken-line region.
   if (cardOpen === true && step.pendingCapture == null) retireCard();
@@ -1987,10 +2354,18 @@ async function drive(step) {
     await speak(step.echo);
   }
   stageEl.textContent = step.stage;
-  setSpoken(step.text, step.stage === 'decided');
+  if (voiceLock !== true) setSpoken(step.text, step.stage === 'decided');
   renderTranscript(step.transcript);
   if (!step.report) renderPanel(step.panel, step.text);
-  await speak(step.narration.text);
+  if (voiceLock === true) {
+    focusConfirmHeading();
+    setSpoken(pendingVerdict, false);
+    await speak(pendingVerdict);
+    setSpoken(step.text, false);
+    await announceLock(step.text);
+  } else {
+    await speak(step.narration.text);
+  }
 
   if (step.report) {
     latestCustomerLink = step.customerLink ?? null;
@@ -2016,11 +2391,80 @@ async function drive(step) {
   }
   if (CAPTURE_SIGNAL[step.stage]) {
     listenEl.textContent = '';
-    await ensureCapture(step.stage);
+    // Behind an open pair the frame stays held — sampling resumes on
+    // keep/retake, never under the confirm card.
+    if (step.pendingCapture == null) await ensureCapture(step.stage);
     return;
   }
 
   listen();
+}
+
+/**
+ * Capture-stage command listener: hears "lock now" and "wait" while the
+ * viewfinder runs. Single-shot recognizer, restarted quietly on silence
+ * (never a re-ask — coaching already talks); anything but a command is
+ * ignored so descriptions stay on the typed path. It stays live while
+ * Armed (commands veto via respond; silence still never re-asks — stillness
+ * is the answer). Never runs behind an open pair or past the stage.
+ */
+function startCaptureListener() {
+  if (!SR || micParked || sampling !== true) return;
+  if (captureStage === null || !CAPTURE_SIGNAL[captureStage]) return;
+  if (pendingRef !== null) return;
+  if (captureRec !== null) return;
+  const rec = new SR();
+  rec.lang = 'en-AU';
+  rec.continuous = false;
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  captureRec = rec;
+  const recStage = captureStage;
+  let settled = false;
+  captureWatchdog = setTimeout(() => {
+    // Silence is presence, not absence: stop, let onend restart quietly.
+    try { rec.stop(); } catch { /* already stopped */ }
+  }, 10000);
+  rec.onresult = (event) => {
+    if (settled) return;
+    settled = true;
+    const heard = (event.results[0][0].transcript || '').trim();
+    stopCaptureListener();
+    if (captureStage !== recStage || sampling !== true) return;
+    if (LOCK_NOW_HEARD.test(heard) || WAIT_HEARD.test(heard)) respond(heard);
+    else startCaptureListener();
+  };
+  rec.onerror = (event) => {
+    if (settled) return;
+    settled = true;
+    const fatal = event && (event.error === 'not-allowed' ||
+      event.error === 'service-not-allowed' || event.error === 'audio-capture');
+    stopCaptureListener();
+    // The turn listener owns mic parks and remedies; a dead mic here just
+    // ends listening (typed carries the turn), anything else restarts.
+    if (!fatal) startCaptureListener();
+  };
+  rec.onend = () => {
+    if (settled) return;
+    settled = true;
+    stopCaptureListener();
+    startCaptureListener();
+  };
+  try { rec.start(); } catch { stopCaptureListener(); }
+}
+
+function stopCaptureListener() {
+  if (captureWatchdog !== null) { clearTimeout(captureWatchdog); captureWatchdog = null; }
+  if (captureRec !== null) {
+    try { captureRec.abort(); } catch { /* already gone */ }
+    captureRec = null;
+  }
+}
+
+/** Veto disarm: drop the fire clock and resume the command listener. */
+function disarmToCoaching() {
+  cancelArmSilent();
+  startCaptureListener();
 }
 
 function listen() {
@@ -2123,9 +2567,18 @@ function listen() {
 }
 
 async function respond(utterance) {
-  if (busy) return;
+  // A command dropped on busy restarts the capture listener (a no-op off
+  // capture stages): the voice veto must survive the round-trip overlap.
+  if (busy) { startCaptureListener(); return; }
   busy = true;
   inputEl.value = '';
+  // A wait/lock utterance vetoes the arm the moment it goes out — the fire
+  // clock must not land between the veto and the server's answer, and an
+  // in-flight tick that armed before the veto retires (armGen).
+  if (WAIT_HEARD.test(utterance) || LOCK_NOW_HEARD.test(utterance)) {
+    armGen += 1;
+    disarmToCoaching();
+  }
 
   try {
     const step = await post('/api/session/' + sessionId + '/say', { utterance });

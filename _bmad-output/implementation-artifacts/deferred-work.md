@@ -40,3 +40,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-meta-live-reachability.md`
   summary: Design a custom-model escape hatch for the unconditional reasoning param if a META_TEXT_MODEL target rejects it.
   evidence: review found no env override; retry is a spec non-goal and no rejecting model is known.
+- source_spec: `_bmad-output/implementation-artifacts/spec-auto-capture.md`
+  summary: Harden veto-adjacent deny phrasing ("no wait", "no wait, lock now") so a hold-off attempt cannot purge the run.
+  evidence: review confirmed the deny regex matches bare "no" by documented contract, making the purge specified behavior, but the trap is new with the wait intent and needs an intent-level fix (confirm-before-purge or carve-out).
+- source_spec: `_bmad-output/implementation-artifacts/spec-auto-capture.md`
+  summary: Harden veto phrasing against affirm precedence ("ok wait" reads as affirm and the arm auto-fires).
+  evidence: review confirmed affirm matches bare "ok" by documented contract; widening veto precedence needs an intent-level decision, not a patch.
+- source_spec: `_bmad-output/implementation-artifacts/spec-auto-capture.md`
+  summary: Cover the client auto-fire clock (beat-to-lock timing, veto fall-through) with executing verification or a recorded manual on-device pass.
+  evidence: review verified the fire clock is pinned only by source-text checks; a wrong delay or dropped doLock stays green, and the spec gates client behavior on the manual run.

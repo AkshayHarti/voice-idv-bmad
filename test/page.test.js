@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import app from "../dist/index.js";
+import { AUTO_CAPTURE_BEAT } from "../dist/flow.js";
 
 // Goal 2 page structure: Halo tokens, assistant surfaces, capture loop
 // wiring. Source-literal assertions (no browser harness exists); the
@@ -141,6 +142,29 @@ test("telemetry stays numeric; v1 zero-heuristics are disclosed", async () => {
   assert.ok(html.includes("videoSample"), "client-side heuristics");
   assert.ok(html.includes("no viewfinder frames are uploaded"), "no frame upload");
   assert.ok(html.includes("moire: 0"), "v1 moire zero disclosed");
+});
+
+test("auto-capture arms on the clean run with a fixed beat and vetoes", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("enterArm"), "arm entry runs the fire clock");
+  assert.ok(html.includes("BEAT_TWIN"), "fixed beat twin");
+  assert.ok(html.includes("Perfect — hold still, capturing."), "beat wording matches the server turn");
+  assert.ok(html.includes(AUTO_CAPTURE_BEAT), "served beat twin matches the server beat constant");
+  assert.ok(html.includes("cancelArmSilent"), "vetoes cancel silently");
+  assert.ok(html.includes("disarmToCoaching"), "vetoes resume coaching");
+  assert.ok(html.includes("armPulse"), "arm haptic pre-pulse");
+  assert.ok(html.includes("navigator.vibrate([12, 60, 12])"), "double pre-pulse distinct from the lock tick");
+  assert.ok(html.includes("startCaptureListener"), "capture-stage command listener");
+  assert.ok(html.includes("captureWatchdog"), "capture-stage command watchdog");
+  assert.ok(!html.includes("pendingRef !== null || armed === true"), "command listener stays live while Armed");
+  assert.ok(html.includes("fireFrameVetoed"), "fire-time frame re-grade");
+  assert.ok(html.includes("if (fireFrameVetoed()) { disarmToCoaching(); return; }"), "faulted fire-time frame disarms");
+  assert.ok(html.includes("prevLuma"), "motion baseline across samples");
+  assert.ok(html.includes("MOTION_THRESHOLD"), "motion veto threshold");
+  assert.ok(html.includes("LOCK_NOW_HEARD"), "lock-now command words");
+  assert.ok(html.includes("voiceLock"), "voice locks share the confirm landing");
+  assert.ok(html.includes("tickArm === armGen"), "mid-flight vetoes retire stale ticks");
+  assert.ok(html.includes("Lock ' + CAPTURE_SHORT[stage]"), "Lock naming carries the stage");
 });
 
 test("confirm card shows the snapshot with a verdict caption and the pair", async () => {

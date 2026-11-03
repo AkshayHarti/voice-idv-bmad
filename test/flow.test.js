@@ -140,6 +140,8 @@ test("deny purges captures and aborts to idle", () => {
   assert.equal(denied.capturesPurged, true);
   assert.equal(denied.stage, "idle");
   assert.equal(denied.last_turn.kind, "abort_confirm");
+  // Negated wait keeps deny precedence (purge), never the hold-off turn.
+  assert.equal(say(startRun("nsw-dl-clean"), "don't wait").last_intent, "deny");
 });
 
 test("all 8 Turn kinds are produced somewhere in the flow", () => {

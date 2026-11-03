@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  CLEAN_RUN_ARM,
   coach,
   COACHING_RETRY_LIMIT,
   detectFault,
   faultKey,
+  isArmClean,
   isLockReady,
   lockReady,
 } from "../dist/telemetry.js";
@@ -119,6 +121,35 @@ test("lock-ready predicate passes quiet frames, blocks every fault", () => {
   }
   assert.equal(lockReady({}), isLockReady({}));
   assert.equal(detectFault({ glare: 0.9 }), faultKey({ glare: 0.9 }));
+});
+
+test("arm-clean gates the run on faults and motion", () => {
+  assert.equal(CLEAN_RUN_ARM, 4);
+  assert.equal(isArmClean({}), true);
+  assert.equal(isArmClean({ glare: 0.1, motion: 0.1 }), true);
+  for (const sample of [
+    { glare: 0.9 },
+    { finger: 0.9 },
+    { skew: 0.9 },
+    { dark: 0.9 },
+    { blur: 0.9 },
+    { moire: 0.9 },
+    { screenshot: true },
+    { missingBack: true },
+    { motion: 0.9 },
+    { motion: 0.9, glare: 0.1 },
+  ]) {
+    assert.equal(isArmClean(sample), false, JSON.stringify(sample));
+  }
+});
+
+test("motion never coaches, faults, or blocks manual lock", () => {
+  assert.equal(faultKey({ motion: 0.9 }), null);
+  assert.deepEqual(coach({ motion: 0.9 }), {
+    kind: "progress",
+    text: "Good framing. Hold still one second…",
+  });
+  assert.equal(isLockReady({ motion: 0.9 }), true);
 });
 
 test("fault keys are canonical (aliases collapse)", () => {

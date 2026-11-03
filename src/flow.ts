@@ -35,8 +35,15 @@ export type Stage =
   | "comparing"
   | "decided";
 
-/** Closed subject intents (6). `not ready` and other negation = `deny`. */
-export type Intent = "affirm" | "deny" | "repeat" | "ready" | "help" | "unknown";
+/** Closed subject intents (7). `not ready` and other negation = `deny`. */
+export type Intent =
+  | "affirm"
+  | "deny"
+  | "repeat"
+  | "ready"
+  | "help"
+  | "wait"
+  | "unknown";
 
 /** Closed system Turns (8). Template-first; every Turn is barge-inable. */
 export type TurnKind =
@@ -137,6 +144,31 @@ const CHALLENGE_TEXT =
 
 const SELFIE_TEXT = "Hold still for your selfie.";
 
+/**
+ * Auto-capture vocabulary (fixed wording — never rotated, never slotted
+ * per stage). The beat announces every auto-fire ahead of the 1.5 s hold;
+ * detection stays invisible (guides/coaching/voice only, never corner
+ * counts or "document found").
+ */
+export const AUTO_CAPTURE_BEAT = "Perfect — hold still, capturing.";
+export const REARM_TEXT = "Lost the steady frame — hold still and I'll try again.";
+export const VETO_DIAGNOSE_TEXT =
+  "Framing keeps shifting — rest your arms on something steady and I'll try again.";
+export const HOLD_OFF_TEXT = "Okay, holding off — say lock now when you're ready.";
+export const PROACTIVE_LOCK_OFFER =
+  "Still lining up — say lock now anytime to capture what I see.";
+/**
+ * Instruct contract line: appended to every capture instruct so each
+ * stage entry announces the auto-capture rhythm and the manual fallback.
+ */
+export const INSTRUCT_CONTRACT_LINE =
+  "I'll capture automatically when it's steady — or say lock now anytime.";
+
+/** One capture instruct: base guidance plus the auto-capture contract. */
+function instructText(base: string): string {
+  return `${base} ${INSTRUCT_CONTRACT_LINE}`;
+}
+
 function instructTurn(
   fixtureId: string,
   which: "front" | "back",
@@ -146,7 +178,9 @@ function instructTurn(
     return withPanel(
       {
         kind: "instruct",
-        text: "Now flip the card over so I can grab your Card Number on the back.",
+        text: instructText(
+          "Now flip the card over so I can grab your Card Number on the back.",
+        ),
       },
       stage,
     );
@@ -159,7 +193,9 @@ function instructTurn(
       return withPanel(
         {
           kind: "instruct",
-          text: "Open to the photo page. I need the two-line code at the bottom fully visible.",
+          text: instructText(
+            "Open to the photo page. I need the two-line code at the bottom fully visible.",
+          ),
         },
         stage,
         { hasBack },
@@ -171,7 +207,9 @@ function instructTurn(
   return withPanel(
     {
       kind: "instruct",
-      text: "Hold your licence up, front facing the camera. Fill the frame.",
+      text: instructText(
+        "Hold your licence up, front facing the camera. Fill the frame.",
+      ),
     },
     stage,
     { hasBack },
@@ -187,10 +225,13 @@ export function captureInstruct(s: FlowState): Turn {
     case "awaiting_doc_back":
       return instructTurn(s.fixture, "back", s.stage);
     case "awaiting_challenge":
-      return withPanel({ kind: "instruct", text: CHALLENGE_TEXT }, s.stage);
+      return withPanel(
+        { kind: "instruct", text: instructText(CHALLENGE_TEXT) },
+        s.stage,
+      );
     case "awaiting_selfie":
       return withPanel(
-        { kind: "instruct", text: "Hold still for your selfie." },
+        { kind: "instruct", text: instructText(SELFIE_TEXT) },
         s.stage,
       );
     case "awaiting_doc_front":
@@ -215,6 +256,10 @@ export function matchIntent(text: string): Intent {
     return "affirm";
   }
   if (/\bready\b|\bstart\b|\bbegin\b|\bgo\b/.test(t)) return "ready";
+  // Hold-off veto for an armed auto-capture ("wait", "hold on"). Checked
+  // after deny/affirm/ready so negations and consent phrasing keep their
+  // existing precedence ("don't wait" still reads as deny).
+  if (/\bwait\b|\bhold\s+on\b|\bhold\s+off\b/.test(t)) return "wait";
   return "unknown";
 }
 
@@ -242,7 +287,11 @@ export function startRun(fixture: string): FlowState {
 export function say(s: FlowState, text: string): FlowState {
   const intent = matchIntent(text);
   const base: FlowState = { ...s, last_intent: intent };
-  switch (intent) {
+  // Outside capture there is nothing to hold off: a wait reads as an
+  // unheard turn (same branch as unknown, truthful intent retained above).
+  const effective: Intent =
+    intent === "wait" && !CAPTURE_STAGES.has(s.stage) ? "unknown" : intent;
+  switch (effective) {
     case "affirm":
     case "ready":
       if (s.stage === "awaiting_consent" || s.stage === "idle") {
@@ -288,6 +337,14 @@ export function say(s: FlowState, text: string): FlowState {
         last_turn: instructTurn(s.fixture, needsBack ? "back" : "front", s.stage),
       };
     }
+    case "wait":
+      // Voice veto: cancel the arm (the session resets its clean run) and
+      // hold off with the manual fallback named. Never advances, never
+      // passes — telemetry coaching resumes underneath.
+      return {
+        ...base,
+        last_turn: withPanel({ kind: "progress", text: HOLD_OFF_TEXT }, s.stage),
+      };
     case "unknown":
       // Typed-description alternative path: in capture stages a description
       // is acknowledged and the run holds (no advance, no pass) while
@@ -444,7 +501,7 @@ export function signal(s: FlowState, ev: string): FlowState {
             last_turn: withPanel(
               {
                 kind: "instruct",
-                text: CHALLENGE_TEXT,
+                text: instructText(CHALLENGE_TEXT),
               },
               "awaiting_challenge",
             ),
@@ -484,7 +541,7 @@ export function signal(s: FlowState, ev: string): FlowState {
           last_turn: withPanel(
             {
               kind: "instruct",
-              text: CHALLENGE_TEXT,
+              text: instructText(CHALLENGE_TEXT),
             },
             "awaiting_challenge",
           ),
@@ -499,7 +556,7 @@ export function signal(s: FlowState, ev: string): FlowState {
           last_turn: withPanel(
             {
               kind: "instruct",
-              text: SELFIE_TEXT,
+              text: instructText(SELFIE_TEXT),
             },
             "awaiting_selfie",
           ),
