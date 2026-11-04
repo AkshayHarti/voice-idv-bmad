@@ -319,6 +319,11 @@ export function generatePanel(
   const text = data.text ?? "";
   let panel: Panel;
   switch (kind) {
+    case "intro":
+      // The intro auto-advances with no user input, so it carries no
+      // acting choices — the text twin only. The consent choice-list
+      // follows immediately behind it.
+      return textPanel(text, provider);
     case "consent":
       panel = {
         primitive: "choice-list",

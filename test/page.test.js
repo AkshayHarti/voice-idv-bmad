@@ -462,6 +462,36 @@ test("cold open: fixed fixture auto-starts with no picker and no gate", async ()
   assert.ok(html.includes("startFixedRun();"), "run auto-starts on page load");
 });
 
+test("intro turn auto-advances to the consent ask with no listen between", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("step.turn === 'intro'"), "drive detects the intro turn");
+  assert.ok(
+    html.includes("if (step.turn === 'intro' && step.stage === 'awaiting_consent')"),
+    "advance guard pins turn, operator, and stage",
+  );
+  assert.ok(html.includes("{ event: 'intro_done' }"), "intro completion signals the server");
+  assert.ok(
+    html.includes("if (advanced.turn === 'consent')"),
+    "a raced advance drops non-consent serves instead of re-driving",
+  );
+  const drive = html.slice(html.indexOf("async function drive(step)"), html.indexOf("let listenerErrors"));
+  const branchAt = drive.indexOf("step.turn === 'intro'");
+  assert.ok(branchAt !== -1, "intro branch lives in drive()");
+  assert.ok(
+    drive.indexOf("await speak(step.narration.text)") < branchAt,
+    "intro speaks through the standard path before advancing",
+  );
+  assert.ok(
+    drive.indexOf("return drive(await post('/api/session/' + sessionId + '/signal'", branchAt) !== -1,
+    "advance chains the consent step back through drive",
+  );
+  const branch = drive.slice(branchAt, drive.indexOf("if (step.report)", branchAt));
+  assert.ok(!branch.includes("listen("), "no listen between the intro speech and the consent fetch");
+  assert.ok(branch.includes("postError(err)"), "advance failure messages instead of stalling");
+  assert.ok(branch.includes("retryBtn.hidden = false"), "expired advance shows Retry");
+  assert.ok(branch.includes("retryBtn.disabled = false"), "expired advance enables Retry");
+});
+
 test("header carries the Aria rebrand line", async () => {
   const html = await getPage();
   assert.ok(html.includes("<title>Aria — Voice onboarding agent</title>"), "title follows the rebrand");

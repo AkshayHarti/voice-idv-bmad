@@ -52,9 +52,9 @@ Back stages are skipped for passports. DLs always require back (Card Number + ad
 
 `affirm`, `deny`, `repeat`, `ready`, `help`, `unknown`. Deterministic keyword match first; model only for `unknown`, constrained to the six. `repeat`/`help` never advance Stage. Negation (`not ready`) = `deny`.
 
-### System Turns (closed, 8)
+### System Turns (closed, 9)
 
-`consent`, `instruct`, `re-ask`, `replay`, `progress`, `warn`, `result`, `abort_confirm`. Deterministic template audio starts immediately (demo 1.5s budget); late model Turn discarded, not spliced.
+`intro`, `consent`, `instruct`, `re-ask`, `replay`, `progress`, `warn`, `result`, `abort_confirm`. Deterministic template audio starts immediately (demo 1.5s budget); late model Turn discarded, not spliced.
 
 ### Happy-path script (Mobile Web)
 

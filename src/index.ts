@@ -1061,7 +1061,10 @@ app.post("/api/session/:id/signal", async (c) => {
     resetArmState(session);
   }
 
-  pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
+  // Stray intro_done past the gate must not duplicate the post-answer turn.
+  if (!(event === "intro_done" && next.stage !== "awaiting_consent")) {
+    pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
+  }
   return c.json(await stepBody(session, c.req.param("id"), null, next.stage !== before));
 });
 
@@ -3078,6 +3081,28 @@ async function drive(step) {
     await announceLock(step.text);
   } else {
     await speak(step.narration.text);
+  }
+
+  // Intro auto-advance: the spoken intro is already rendered (spoken line,
+  // transcript, panel) and voiced above through the standard speak path,
+  // so the consent ask follows immediately with no listen() between — the
+  // mic first opens on the consent turn below.
+  if (step.turn === 'intro' && step.stage === 'awaiting_consent') {
+    listenEl.textContent = '';
+    try {
+      // A typed answer racing intro speech already drove its own step —
+      // only a fresh consent serve advances from here.
+      const advanced = await post('/api/session/' + sessionId + '/signal', { event: 'intro_done' });
+      if (advanced.turn === 'consent') return drive(advanced);
+      return;
+    } catch (err) {
+      listenEl.textContent = postError(err);
+      if (err && err.status === 404) {
+        retryBtn.hidden = false;
+        retryBtn.disabled = false;
+      }
+      return;
+    }
   }
 
   if (step.report) {
