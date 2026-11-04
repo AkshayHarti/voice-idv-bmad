@@ -44,40 +44,44 @@ def default_tempo() -> float:
 def wsola_stretch(x: np.ndarray, rate: int, tempo: float) -> np.ndarray:
     """Slow speech without the pitch drop (waveform-similarity overlap-add).
 
-    tempo < 1 stretches (0.9 ≈ 11% longer); tempo >= 1 returns x untouched.
-    Pitch and formants survive; only time moves.
+    tempo < 1 stretches (0.85 ≈ 18% longer); tempo >= 1 returns x untouched.
+    Each new frame anchors to the emitted tail by normalized correlation,
+    so pitch periods continue instead of smearing. Pitch and formants
+    survive; only time moves.
     """
-    if tempo >= 1.0 or len(x) < rate:
-        return x
+    xd = np.asarray(x, dtype=np.float64).reshape(-1)
+    if tempo >= 1.0 or len(xd) < rate:
+        return xd.astype(np.float32)
     hop_s = rate // 100  # 10 ms synthesis hop
     hop_a = max(1, int(round(hop_s * tempo)))
     win = rate * 20 // 1000  # 20 ms frames
+    ov = win - hop_s  # overlap each frame must continue
     tol = rate * 10 // 1000  # ±10 ms similarity search
     window = np.hanning(win)
-    out = np.zeros(win + int(len(x) / tempo) + hop_s, dtype=np.float64)
-    pos = 0  # synthesis frame start in out
-    ana = 0  # expected analysis start in x
-    filled = 0
-    xd = x.astype(np.float64)
-    while ana + win <= len(xd):
+    xp = np.concatenate([xd, np.zeros(win)])  # pad: final frame decays fully
+    out = np.zeros(int(len(xd) / tempo) + 2 * win, dtype=np.float64)
+    out[0:win] = xd[0:win] * window
+    pos = hop_s
+    ana = hop_a
+    while ana < len(xd):
         lo = max(0, ana - tol)
-        hi = min(len(xd) - win, ana + tol)
-        if hi <= lo:
-            best = ana
+        hi = min(len(xp) - win, ana + tol)
+        tail = out[pos : pos + ov]
+        tn = float(np.dot(tail, tail))
+        if tn < 1e-12 or hi <= lo:
+            best = min(ana, len(xp) - win)
         else:
-            ref = out[pos : pos + win] if filled >= pos + win else xd[ana : ana + win]
-            # Offset with the best overlap to what we already emitted.
-            scores = [
-                float(np.dot(xd[o : o + win] * window, ref * window))
-                for o in range(lo, hi + 1, 8)
-            ]
-            best = lo + 8 * int(np.argmax(scores))
-        frame = xd[best : best + win] * window
-        out[pos : pos + win] += frame  # Hann at 50% overlap sums flat
-        filled = max(filled, pos + win)
+            seg = xp[lo : hi + ov]
+            cands = np.lib.stride_tricks.sliding_window_view(seg, ov)[::4]
+            cn = np.einsum("ij,ij->i", cands, cands)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                scores = (cands @ tail) / np.sqrt(tn * cn)
+            scores[~np.isfinite(scores)] = -1.0
+            best = lo + 4 * int(np.argmax(scores))
+        out[pos : pos + win] += xp[best : best + win] * window
         pos += hop_s
         ana += hop_a
-    return out[:filled].astype(np.float32)
+    return out[: pos - hop_s + win].astype(np.float32)
 
 
 def gentle_eq(x: np.ndarray, rate: int) -> np.ndarray:
