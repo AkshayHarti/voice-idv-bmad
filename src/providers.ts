@@ -39,6 +39,8 @@ interface ChainDeps {
 }
 
 export const META_BASE = "https://api.meta.ai/v1";
+/** Transcribe runs its own ASR endpoints, not /responses. */
+export const META_ASR_BASE = "https://api.meta.ai/v1/asr";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const REPLICATE_BASE = "https://api.replicate.com/v1";
 
@@ -73,6 +75,34 @@ export async function postJson(
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`${url} responded ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Multipart POST twin of postJson (the ASR file endpoint takes
+ * multipart, not JSON). Same timeout/abort contract. Never parses
+ * failures — throws, and the chain records skipped[].
+ */
+export async function postForm(
+  fetcher: Fetcher,
+  url: string,
+  headers: Record<string, string>,
+  form: FormData,
+  timeoutMs = 8000,
+): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetcher(url, {
+      method: "POST",
+      headers,
+      body: form,
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`${url} responded ${response.status}`);
@@ -399,5 +429,85 @@ export async function ocrCrop(
   } catch (error) {
     skipped.push(`meta: ${(error as Error).message}`);
     return { provider: "local", fields: null, skipped };
+  }
+}
+
+export interface TranscribeRequest {
+  /** WAV bytes (16 kHz mono 16-bit PCM) as base64; absent → local null. */
+  audioBase64?: string;
+  /** Optional correlation id (the run id); the server mints when absent. */
+  sessionId?: string;
+}
+
+/**
+ * Pull the transcript out of an ASR reply (`{transcript}`). Empty or
+ * missing transcripts read as null (silence / no speech) — the caller
+ * falls back to on-device recognition. Never throws.
+ */
+function transcriptText(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const text = (payload as { transcript?: unknown }).transcript;
+  return typeof text === "string" && text.trim() ? text.trim() : null;
+}
+
+/**
+ * Speech-to-text via Muse Voice Transcribe (primary ASR, spec §5).
+ * Multipart file upload (PUSH_TO_TALK — the client delimits the turn),
+ * 8s budget, spend logged after success only, skipped[] on failure,
+ * never throws. Audio bytes are transcribed in-memory and dropped —
+ * nothing is stored or logged. Shape verified live 2026-11-04.
+ */
+export async function transcribeAudio(
+  request: TranscribeRequest,
+  deps: ChainDeps = {},
+): Promise<{ provider: ProviderName; text: string | null; skipped: string[] }> {
+  const env = deps.env ?? {};
+  const fetcher = deps.fetcher ?? fetch;
+  const skipped: string[] = [];
+
+  if (!env.META_API_KEY) {
+    skipped.push("meta: not configured");
+    return { provider: "local", text: null, skipped };
+  }
+  if (!request.audioBase64) {
+    skipped.push("meta: no audio supplied (no transcription attempted)");
+    return { provider: "local", text: null, skipped };
+  }
+
+  try {
+    const form = new FormData();
+    form.append(
+      "request",
+      new Blob(
+        [
+          JSON.stringify({
+            mode: "PUSH_TO_TALK",
+            model: META_MODELS.transcribe,
+            audioEncoding: "WAV",
+          }),
+        ],
+        { type: "application/json" },
+      ),
+    );
+    // atob, not Buffer: this module stays @types/node-free (Workers-safe).
+    const bin = atob(request.audioBase64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    form.append("audio", new Blob([bytes], { type: "audio/wav" }), "utterance.wav");
+    const query = request.sessionId ? `?sessionId=${encodeURIComponent(request.sessionId)}` : "";
+    const payload = await postForm(
+      fetcher,
+      `${META_ASR_BASE}/transcribe${query}`,
+      { authorization: `Bearer ${env.META_API_KEY}` },
+      form,
+      8000,
+    );
+    const text = transcriptText(payload);
+    if (!text) throw new Error("meta returned no transcript");
+    logSpend(META_MODELS.transcribe, 1, PRICING[META_MODELS.transcribe].perCall);
+    return { provider: "meta", text, skipped };
+  } catch (error) {
+    skipped.push(`meta: ${(error as Error).message}`);
+    return { provider: "local", text: null, skipped };
   }
 }

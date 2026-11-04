@@ -12,5 +12,6 @@ this file is the durable, human-audited record.
 | 2026-11-01 | 2 | muse-spark-1.3 | 0 | 0.00 | 0.00 | Audit + narration verified via stub fetchers only; no live calls (egress still down). |
 | 2026-11-01 | 3 | glimmer | 0 | 0.00 | 0.00 | Art script run: 1 bare 404, rest hung (egress flaky ~1/15 through). No image billed. Art pending rerun; fixtures + ground truth green. |
 | 2026-11-01 | 4 | all | 0 | 0.00 | 0.00 | Meta report path verified via stubs; live test skips without key in env. No live calls billed. |
+| 2026-11-04 | ASR | muse-voice-transcribe-1.0 | 2 | 0.00 | 0.00 | ID verification probes: /models lists the ID; /responses rejects it (model_not_found — ASR has its own endpoints); POST /v1/asr/transcribe 200 on a 0.56 s tone (empty transcript, ~$0.00003) + one end-to-end app round-trip on a 0.5 s tone (1.4 s, null text). Request shape: multipart request{mode,audioEncoding}+audio WAV. |
 
 Running total: **$0.00**

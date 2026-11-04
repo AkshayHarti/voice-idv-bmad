@@ -33,7 +33,7 @@ import { buildMeasurements } from "./measurements.js";
 import { spendTotal } from "./meta-models.js";
 import { generatePanel } from "./panels.js";
 import type { PanelRow } from "./panels.js";
-import { configuredProviders, narrate, ocrCrop, segment, templateNarration } from "./providers.js";
+import { configuredProviders, narrate, ocrCrop, segment, templateNarration, transcribeAudio } from "./providers.js";
 import type { OcrFields, ProviderName } from "./providers.js";
 import { redactRef } from "./redact.js";
 import { CLEAN_RUN_ARM, coach, FAULT_KEYS, faultKey, isArmClean, isLockReady } from "./telemetry.js";
@@ -252,6 +252,10 @@ export const OCR_ATTEMPTS_PER_STAGE = 3;
 const CROP_PATTERN = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]{100,}$/;
 /** Max gap between clean samples (2x the 200 ms cadence) that still extends the run. */
 export const STREAK_FRESH_MS = 400;
+/** Largest transcribe upload the server accepts (chars of data URL, ~24 s of 16 kHz mono WAV). */
+export const MAX_AUDIO_CHARS = 1_000_000;
+/** Transcribe uploads must be real WAV payloads: MIME allowlist + base64 floor. */
+const AUDIO_PATTERN = /^data:audio\/(wav|x-wav);base64,[A-Za-z0-9+/=]{100,}$/;
 
 const sessions = new Map<string, Session>();
 
@@ -1003,6 +1007,34 @@ app.post("/api/session/:id/signal", async (c) => {
 
   pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
   return c.json(await stepBody(session, c.req.param("id"), null, next.stage !== before));
+});
+
+/**
+ * Speech-to-text for one recorded utterance (primary ASR, spec §5).
+ * WAV in, transcript text out — never a 4xx for transcription itself
+ * (unreadable audio, outage, and silence all read as text: null so the
+ * client falls back to on-device recognition, then typed). Audio bytes
+ * are transcribed in-memory and dropped: never stored, never logged.
+ */
+app.post("/api/session/:id/transcribe", async (c) => {
+  if (!sessions.has(c.req.param("id"))) return c.json({ error: "unknown_session" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { audio?: unknown };
+  const audio = typeof body.audio === "string" ? body.audio : "";
+  const comma = audio.indexOf(",");
+  const b64 = comma >= 0 ? audio.slice(comma + 1) : "";
+  if (!AUDIO_PATTERN.test(audio) || audio.length > MAX_AUDIO_CHARS || !b64) {
+    return c.json({
+      provider: "local",
+      text: null,
+      skipped: ["local: unreadable or oversize audio (no transcription attempted)"],
+    });
+  }
+  return c.json(
+    await transcribeAudio(
+      { audioBase64: b64, sessionId: c.req.param("id") },
+      { env: processEnv() },
+    ),
+  );
 });
 
 function num(v: unknown): number | undefined {
@@ -1855,10 +1887,14 @@ window.addEventListener('keydown', (e) => {
 });
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+// Transcribe-first when the server is Meta-keyed (primary ASR, spec §5);
+// unkeyed runs keep on-device recognition. Set by the providers fetch.
+let asrPrimary = false;
 
 fetch('/api/providers').then(r => r.json()).then(p => {
+  asrPrimary = p.meta === true;
   noteEl.textContent = 'Narration: ' + (p.meta ? 'Meta Model API' : p.openrouter ? 'OpenRouter' : 'local templates')
-    + ' · Speech in: ' + (SR ? 'browser recognition' : 'typed only')
+    + ' · Speech in: ' + (asrPrimary ? 'Muse Voice Transcribe' : SR ? 'browser recognition' : 'typed only')
     + ' · Speech out: browser synthesis';
 });
 
@@ -2948,11 +2984,12 @@ async function drive(step) {
 
 /**
  * Capture-stage command listener: hears "lock now" and "wait" while the
- * viewfinder runs. Single-shot recognizer, restarted quietly on silence
- * (never a re-ask — coaching already talks); anything but a command is
- * ignored so descriptions stay on the typed path. It stays live while
- * Armed (commands veto via respond; silence still never re-asks — stillness
- * is the answer). Never runs behind an open pair or past the stage.
+ * viewfinder runs. Transcribe-first when keyed, single-shot on-device
+ * recognizer otherwise; either path restarts quietly on silence (never a
+ * re-ask — coaching already talks); anything but a command is ignored so
+ * descriptions stay on the typed path. It stays live while Armed (commands
+ * veto via respond; silence still never re-asks — stillness is the
+ * answer). Never runs behind an open pair or past the stage.
  */
 // Restart backoff: a persistent recognizer error must not spin hot
 // recognizers — after 3 errors inside 5 s, wait 2 s before retrying.
@@ -2969,9 +3006,41 @@ function restartCaptureListener() {
   startCaptureListener();
 }
 function startCaptureListener() {
-  if (!SR || micParked || sampling !== true) return;
+  if (micParked || sampling !== true) return;
   if (captureStage === null || !CAPTURE_SIGNAL[captureStage]) return;
   if (pendingRef !== null) return;
+  if (captureRec !== null || captureAsrBusy) return;
+  if (asrPrimary && sessionId) return captureTranscribe();
+  if (!SR) return;
+  captureSpeech();
+}
+
+let captureAsrBusy = false;
+/** Transcribe-first command window: record, match lock/wait, restart quietly. */
+async function captureTranscribe() {
+  if (captureAsrBusy) return;
+  captureAsrBusy = true;
+  const recStage = captureStage;
+  let heard = null;
+  try { heard = await transcribeUtterance(); }
+  catch { heard = null; }
+  captureAsrBusy = false;
+  if (captureStage !== recStage || sampling !== true) return;
+  if (pendingRef !== null) return;
+  if (heard && typeof heard.text === 'string') {
+    listenerErrors = 0;   // heard speech: the mic demonstrably works
+    if (LOCK_NOW_HEARD.test(heard.text) || WAIT_HEARD.test(heard.text)) { respond(heard.text); return; }
+    startCaptureListener();
+    return;
+  }
+  // Silence restarts quietly (stillness is the answer); failure drops one
+  // SR window down the ladder, whose restart re-routes Transcribe-first.
+  if (heard && heard.silence === true) return startCaptureListener();
+  if (SR) return captureSpeech();
+  restartCaptureListener();
+}
+
+function captureSpeech() {
   if (captureRec !== null) return;
   const rec = new SR();
   rec.lang = 'en-AU';
@@ -3021,6 +3090,7 @@ function stopCaptureListener() {
     try { captureRec.abort(); } catch { /* already gone */ }
     captureRec = null;
   }
+  stopRecording();
 }
 
 /** Veto disarm: drop the fire clock and resume the command listener. */
@@ -3029,7 +3099,166 @@ function disarmToCoaching() {
   startCaptureListener();
 }
 
+// Transcribe-first speech input (primary ASR, spec §5): record one
+// utterance, upload 16 kHz mono WAV, feed the transcript to /say. Bytes
+// live in locals only — transcribed and dropped, like the snapshot.
+const ASR_SAMPLE_RATE = 16000;
+const ASR_SILENCE_MS = 1100;
+const ASR_MAX_MS = 12000;
+const ASR_VAD_LEVEL = 14;
+const ASR_MAX_CHARS = 700000;   // ~16 s of 16 kHz mono WAV, under the server cap
+let activeRecording = null;
+function stopRecording() {
+  const r = activeRecording;
+  activeRecording = null;
+  if (r) {
+    r.stopped = true;
+    try { for (const t of r.stream.getTracks()) t.stop(); } catch { /* already stopped */ }
+  }
+}
+
+/** Decode any recorded blob, downmix to 16 kHz mono 16-bit WAV data URL (or null). */
+async function blobToWav16k(blob) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  const ctx = new Ctx();
+  try {
+    const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    if (!buf || !buf.getChannelData) return null;
+    const ch0 = buf.getChannelData(0);
+    const ratio = buf.sampleRate / ASR_SAMPLE_RATE;
+    const len = Math.floor(ch0.length / ratio);
+    if (len <= 0) return null;
+    const data = new DataView(new ArrayBuffer(44 + len * 2));
+    const wstr = (o, s) => { for (let i = 0; i < s.length; i++) data.setUint8(o + i, s.charCodeAt(i)); };
+    wstr(0, 'RIFF'); data.setUint32(4, 36 + len * 2, true); wstr(8, 'WAVEfmt ');
+    data.setUint32(16, 16, true); data.setUint16(20, 1, true); data.setUint16(22, 1, true);
+    data.setUint32(24, ASR_SAMPLE_RATE, true); data.setUint32(28, ASR_SAMPLE_RATE * 2, true);
+    data.setUint16(32, 2, true); data.setUint16(34, 16, true); wstr(36, 'data');
+    data.setUint32(40, len * 2, true);
+    for (let i = 0; i < len; i++) {
+      const s = Math.max(-1, Math.min(1, ch0[Math.floor(i * ratio)]));
+      data.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    const bytes = new Uint8Array(data.buffer);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 8192) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    }
+    const url = 'data:audio/wav;base64,' + btoa(bin);
+    return url.length <= ASR_MAX_CHARS ? url : null;
+  } catch { return null; }
+  finally { try { ctx.close(); } catch { /* already closed */ } }
+}
+
+/**
+ * Record one utterance: VAD silence-stop, 12 s cap. Resolves a WAV data
+ * URL, {silence: true} when nothing was said (no upload), or null on
+ * any failure (no mic, denied, unencodable). stopRecording() ends the
+ * window early from retire paths.
+ */
+async function recordUtterance() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return null;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx || typeof MediaRecorder === 'undefined') return null;
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch { return null; }
+  const rec = { stream, stopped: false };
+  activeRecording = rec;
+  try {
+    const ctx = new Ctx();
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+    const bins = new Uint8Array(analyser.fftSize);
+    const chunks = [];
+    const recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    recorder.start();
+    const speech = await new Promise((resolve) => {
+      const t0 = Date.now();
+      let silenceSince = 0;
+      let voiced = false;
+      const tick = setInterval(() => {
+        if (rec.stopped || activeRecording !== rec) { clearInterval(tick); resolve(voiced); return; }
+        analyser.getByteTimeDomainData(bins);
+        let peak = 0;
+        for (let i = 0; i < bins.length; i += 4) {
+          const d = Math.abs(bins[i] - 128);
+          if (d > peak) peak = d;
+        }
+        const now = Date.now();
+        if (peak >= ASR_VAD_LEVEL) { voiced = true; silenceSince = now; }
+        else if (voiced && now - silenceSince >= ASR_SILENCE_MS) { clearInterval(tick); resolve(true); return; }
+        if (now - t0 >= ASR_MAX_MS) { clearInterval(tick); resolve(voiced); return; }
+      }, 100);
+    });
+    await new Promise((resolve) => {
+      recorder.onstop = () => resolve();
+      try { recorder.requestData(); recorder.stop(); } catch { resolve(); }
+      setTimeout(resolve, 1000);   // a stuck recorder never hangs the turn
+    });
+    try { ctx.close(); } catch { /* already closed */ }
+    if (!speech) return { silence: true };
+    const wav = await blobToWav16k(new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }));
+    return wav;
+  } catch { return null; }
+  finally {
+    if (activeRecording === rec) activeRecording = null;
+    try { for (const t of stream.getTracks()) t.stop(); } catch { /* already stopped */ }
+  }
+}
+
+/** One recorded utterance through the ASR endpoint: {text}, {silence}, or null. */
+async function transcribeUtterance() {
+  const rec = await recordUtterance();
+  if (!rec) return null;
+  if (rec.silence === true) return rec;
+  try {
+    const res = await post('/api/session/' + sessionId + '/transcribe', { audio: rec });
+    const text = typeof res.text === 'string' ? res.text.trim() : '';
+    return text ? { text } : null;
+  } catch { return null; }
+}
+
+// Speech-in router: Transcribe-first when keyed (primary ASR, spec §5),
+// on-device recognition otherwise. Transcribe misses fall down the same
+// ladder: recognition, then typed.
 function listen() {
+  if (asrPrimary && !micParked && sessionId) return listenTranscribe();
+  return listenSpeech();
+}
+
+async function listenTranscribe() {
+  inputEl.focus({ preventScroll: true });
+  voiceGen += 1;
+  const gen = voiceGen;
+  stopRecording();
+  if (activeRecognition) {
+    try { activeRecognition.abort(); } catch { /* already gone */ }
+    activeRecognition = null;
+  }
+  listenEl.textContent = 'Listening...';
+  setOrb('listening');
+  let heard = null;
+  try { heard = await transcribeUtterance(); }
+  catch { heard = null; }
+  if (gen !== voiceGen) return;   // a typed answer or restart won the race
+  setOrb('idle');
+  listenEl.textContent = '';
+  if (heard && typeof heard.text === 'string') {
+    silentStreak = 0;
+    respond(heard.text);
+    return;
+  }
+  // Silence, failure, or outage: fall down the ladder (SR, then typed).
+  listenSpeech();
+}
+
+function listenSpeech() {
   inputEl.focus({ preventScroll: true });
   if (!SR || micParked) {
     listenEl.textContent = micParked
@@ -3082,7 +3311,7 @@ function listen() {
       if (silentStreak >= 3) {
         micParked = "I can't hear anything — check your microphone" + START_RETRY_SUFFIX;
         silenceParked = true;
-        listen();
+        listenSpeech();
         return;
       }
       respond('');
@@ -3107,13 +3336,13 @@ function listen() {
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
       if (!abandon()) return;
       micParked = "Microphone is blocked — allow it in your browser's site settings" + START_RETRY_SUFFIX;
-      listen();
+      listenSpeech();
       return;
     }
     if (event.error === 'audio-capture') {
       if (!abandon()) return;
       micParked = 'No microphone found — connect one' + START_RETRY_SUFFIX;
-      listen();
+      listenSpeech();
       return;
     }
     if (event.error === 'network') {
@@ -3180,6 +3409,7 @@ startBtn.addEventListener('click', async () => {
     try { activeRecognition.abort(); } catch { /* already gone */ }
     activeRecognition = null;
   }
+  stopRecording();
   micParked = null;
   silenceParked = false;
   silentStreak = 0;
