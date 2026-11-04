@@ -1,4 +1,4 @@
-// NSW driver licence parse helpers (AU voice-IDV demo slice).
+// NSW/VIC driver licence parse helpers (AU voice-IDV demo slice).
 // 100% synthetic data. Never log full licence/card numbers (see spec §6
 // minimisation). DVS is the source of truth for number formats; the table
 // below is versioned demo config only.
@@ -22,14 +22,18 @@ export interface DLBackFields {
 }
 
 export interface DLFields extends DLFrontFields {
-  state: "NSW";
+  state: "NSW" | "VIC";
   card_number: string;
   address_sticker: DLAddressSticker;
 }
 
 /** Per-state card-number location (config; validated in pilot). */
-export const STATE_TABLE: { NSW: { card_location: "back" } } = {
+export const STATE_TABLE: {
+  NSW: { card_location: "back" };
+  VIC: { card_location: "back" };
+} = {
   NSW: { card_location: "back" },
+  VIC: { card_location: "back" },
 };
 
 /**
@@ -41,11 +45,13 @@ export const LICENCE_FORMATS = {
   source: "DVS",
   patterns: {
     NSW: /^\d{8}$/,
+    // ASSUMED, pilot-unverified (DVS confirms): VIC licence is 9 digits.
+    VIC: /^\d{9}$/,
   } as const,
 };
 
 /** Validate a licence number for a state via the versioned format table. */
-export function validateLicenceNumber(state: "NSW", licenceNumber: string): boolean {
+export function validateLicenceNumber(state: "NSW" | "VIC", licenceNumber: string): boolean {
   return LICENCE_FORMATS.patterns[state].test(licenceNumber);
 }
 
@@ -66,6 +72,32 @@ export function parseNSWDL(
     address: front.address,
     expiry_date: front.expiry_date,
     state: "NSW",
+    card_number: back?.card_number ?? "",
+    address_sticker: back?.address_sticker ?? {
+      present: false,
+      parsed_address: "",
+    },
+  };
+}
+
+/**
+ * Parse VIC DL front/back OCR fields into DLFields (no validation).
+ * Additive sibling of parseNSWDL: back capture is mandatory in VIC
+ * (`STATE_TABLE.VIC.card_location` is "back", ASSUMED pilot-unverified);
+ * a null back yields an empty `card_number` so the check engine fails
+ * `card_number_present`, exactly like NSW.
+ */
+export function parseVICDL(
+  front: DLFrontFields,
+  back: DLBackFields | null,
+): DLFields {
+  return {
+    licence_number: front.licence_number,
+    full_name: front.full_name,
+    dob: front.dob,
+    address: front.address,
+    expiry_date: front.expiry_date,
+    state: "VIC",
     card_number: back?.card_number ?? "",
     address_sticker: back?.address_sticker ?? {
       present: false,

@@ -1,11 +1,11 @@
-# Fixture art (Glimmer visual bases)
+# Fixture art (Muse Image visual bases)
 
-Status 2026-11-01: **pending** — `node scripts/glimmer-art.mjs` could not
+Status 2026-11-01: **pending** — `node scripts/image-art.mjs` could not
 complete (sandbox egress to api.meta.ai hangs ~14/15 attempts; one attempt
 returned a bare 404 with no body). Rerun when the network path is healthy:
 
 ```bash
-npm run build && node scripts/glimmer-art.mjs
+npm run build && node scripts/image-art.mjs
 ```
 
 Expected outputs (backdrop only — MRZ/card-number regions are composed

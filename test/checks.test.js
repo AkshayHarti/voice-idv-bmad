@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadFixture } from "../dist/fixtures.js";
 import { parseTD3 } from "../dist/mrz.js";
-import { parseNSWDL } from "../dist/au_dl.js";
+import { parseNSWDL, parseVICDL } from "../dist/au_dl.js";
 import { runChecks, decide } from "../dist/checks.js";
 import { redactRef } from "../dist/redact.js";
 
@@ -38,7 +38,7 @@ function measurementsFor(id) {
     kind: "au_dl",
     mrz_lines: null,
     viz: null,
-    dl: parseNSWDL(fx.front, fx.back),
+    dl: (fx.state === "VIC" ? parseVICDL : parseNSWDL)(fx.front, fx.back),
     ...signals,
   };
 }
@@ -95,6 +95,24 @@ test("NSW DL back checks: missing card fails; sticker mismatch fails", () => {
   m.dl.address_sticker = {
     present: true,
     parsed_address: "9 OTHER ST MELBOURNE VIC 3000",
+  };
+  const r = runChecks(m);
+  const sticker = r.find(c => c.id === "address_sticker_match");
+  assert.equal(sticker.result, "fail");
+  assert.match(sticker.evidence, /vs/);
+  assert.equal(decide(r), "rejected");
+});
+
+test("VIC DL back checks: missing card fails; sticker mismatch fails", () => {
+  assert.equal(decide(runChecks(measurementsFor("vic-dl-clean"))), "verified");
+  const missing = runChecks(measurementsFor("vic-dl-missing-back"));
+  assert.equal(missing.find(c => c.id === "card_number_present").result, "fail");
+  assert.equal(missing.find(c => c.id === "address_sticker_match").result, "pass");
+  assert.equal(decide(missing), "rejected");
+  const m = measurementsFor("vic-dl-clean");
+  m.dl.address_sticker = {
+    present: true,
+    parsed_address: "9 OTHER ST SYDNEY NSW 2000",
   };
   const r = runChecks(m);
   const sticker = r.find(c => c.id === "address_sticker_match");

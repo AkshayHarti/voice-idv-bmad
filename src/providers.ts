@@ -6,8 +6,10 @@
 // Decisions come from the check engine over fixtures, so --no-meta runs
 // decide identically (parity). With no keys everything runs offline.
 // Model IDs/prices come from ./meta-models.js (pinned, Task 0). Live calls
-// run behind `progress` Turns at ≤8000ms (Task 0 binding prescription);
-// inline narration keeps ≤1000ms so the 1.5s floor holds.
+// run at ≤8000ms (Task 0 binding prescription); inline narration allows
+// the full 8s when keyed — measured 2.3–7.7s live (2026-11-03), so the
+// old ≤1000ms abort never let Meta serve. The 1.5s floor holds on the
+// unkeyed/local path; keyed turns trade latency for live polish.
 // Avoid: not liveness, not forgery proof, not certified matching —
 // narration describes prompts; only checks decide.
 import { META_MODELS, PRICING, logSpend } from "./meta-models.js";
@@ -81,15 +83,32 @@ export async function postJson(
 }
 
 export function responseText(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
   const data = payload as {
     output_text?: string;
     choices?: Array<{ message?: { content?: string } }>;
+    output?: Array<{
+      type?: string;
+      content?: Array<{ type?: string; text?: string }>;
+    }>;
   };
   if (typeof data.output_text === "string" && data.output_text.trim()) {
     return data.output_text.trim();
   }
   const choice = data.choices?.[0]?.message?.content;
   if (typeof choice === "string" && choice.trim()) return choice.trim();
+  // Live Responses shape: output[].message.content[] text parts (reasoning
+  // parts carry no text and are skipped by the type check).
+  if (Array.isArray(data.output)) {
+    for (const item of data.output) {
+      if (item?.type !== "message" || !Array.isArray(item.content)) continue;
+      for (const part of item.content) {
+        if (part?.type === "output_text" && typeof part.text === "string" && part.text.trim()) {
+          return part.text.trim();
+        }
+      }
+    }
+  }
   return null;
 }
 
@@ -104,25 +123,35 @@ export async function narrate(
   const skipped: string[] = [];
 
   if (env.META_API_KEY) {
+    const metaStart = Date.now();
     try {
+      // Minimal reasoning effort + 8s budget: measured 2.3–7.7s live
+      // (high effort is slower and the old 1s abort never let Meta serve).
       const payload = await postJson(
         fetcher,
         `${META_BASE}/responses`,
         { authorization: `Bearer ${env.META_API_KEY}` },
         {
           model: env.META_TEXT_MODEL ?? META_MODELS.spark,
+          reasoning: { effort: "minimal" },
           input:
             `You are the voice of an identity verification flow. Reply with one ` +
             `spoken sentence, at most 30 words, no markdown. ` +
             `Turn: ${request.turn}. Fact to convey: ${request.text}. ` +
             `Prior turns: ${history.slice(-3).join(" | ") || "none"}`,
         },
+        8000,
       );
       const text = responseText(payload);
       if (!text) throw new Error("meta returned no text");
+      logSpend(META_MODELS.spark, 1, PRICING[META_MODELS.spark].perCall);
       return { text, provider: "meta", skipped };
     } catch (error) {
-      skipped.push(`meta: ${(error as Error).message}`);
+      const ms = Date.now() - metaStart;
+      const err = error as Error;
+      const cause =
+        err?.name === "AbortError" ? `timed out after ${ms}ms` : `${err?.message ?? err} (${ms}ms)`;
+      skipped.push(`meta: ${cause}`);
     }
   } else {
     skipped.push("meta: not configured");
@@ -266,4 +295,109 @@ export async function segment(
   }
 
   return { provider: "local", regions: knownRegions, skipped };
+}
+
+export interface OcrRequest {
+  /** Which side was locked (front carries identity, back the card number). */
+  side: "front" | "back";
+  /** Base64 locked doc crop; absent on the stand-in path (no OCR attempted). */
+  imageBase64?: string;
+}
+
+export interface OcrFields {
+  side: "front" | "back";
+  licence_number?: string;
+  full_name?: string;
+  dob?: string;
+  address?: string;
+  expiry_date?: string;
+  card_number?: string;
+}
+
+const OCR_KEYS = [
+  "licence_number",
+  "full_name",
+  "dob",
+  "address",
+  "expiry_date",
+  "card_number",
+] as const;
+
+/**
+ * Pull DL fields out of a vision-model reply. Accepts a JSON object with
+ * any of the known keys (surrounding prose tolerated); unknown keys are
+ * dropped and values are trimmed + capped. Null when no known key reads.
+ * Never throws.
+ */
+function ocrFieldsFromText(text: string, side: "front" | "back"): OcrFields | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  const fields: OcrFields = { side };
+  let found = 0;
+  for (const key of OCR_KEYS) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      fields[key] = value.trim().slice(0, 200);
+      found += 1;
+    }
+  }
+  return found > 0 ? fields : null;
+}
+
+/**
+ * Server OCR on a locked doc crop (display-only — never fed to checks).
+ * Meta-first via Wonder (the only text-from-image candidate, provisional);
+ * the segment pattern: image_base64 + 8s budget, spend logged after
+ * success only, skipped[] on failure, never throws. No offshore fallback.
+ */
+export async function ocrCrop(
+  request: OcrRequest,
+  deps: ChainDeps = {},
+): Promise<{ provider: ProviderName; fields: OcrFields | null; skipped: string[] }> {
+  const env = deps.env ?? {};
+  const fetcher = deps.fetcher ?? fetch;
+  const skipped: string[] = [];
+
+  if (!env.META_API_KEY) {
+    skipped.push("meta: not configured");
+    return { provider: "local", fields: null, skipped };
+  }
+  if (!request.imageBase64) {
+    skipped.push("meta: no image supplied (no OCR attempted)");
+    return { provider: "local", fields: null, skipped };
+  }
+
+  try {
+    const payload = await postJson(
+      fetcher,
+      `${META_BASE}/responses`,
+      { authorization: `Bearer ${env.META_API_KEY}` },
+      {
+        model: META_MODELS.wonder,
+        input:
+          `Read this Australian driver licence ${request.side}. ` +
+          `Reply with JSON only, keys licence_number, full_name, dob, ` +
+          `address, expiry_date (front) and card_number (back).`,
+        image_base64: request.imageBase64,
+      },
+      8000,
+    );
+    const text = responseText(payload);
+    const fields = text ? ocrFieldsFromText(text, request.side) : null;
+    if (!fields) throw new Error("meta returned no fields");
+    logSpend(META_MODELS.wonder, 1, PRICING[META_MODELS.wonder].perCall);
+    return { provider: "meta", fields, skipped };
+  } catch (error) {
+    skipped.push(`meta: ${(error as Error).message}`);
+    return { provider: "local", fields: null, skipped };
+  }
 }

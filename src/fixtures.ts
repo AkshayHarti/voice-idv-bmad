@@ -16,9 +16,9 @@ export interface PassportFixture {
 export interface DLFixture {
   id: string;
   kind: "au_dl";
-  state: "NSW";
+  state: "NSW" | "VIC";
   front: DLFrontFields;
-  /** Null when the back was never captured (NSW requires back). */
+  /** Null when the back was never captured (NSW and VIC require back). */
   back: DLBackFields | null;
   /** Check ids this fixture is expected to fail (named for the demo). */
   expected_failures: string[];
@@ -91,6 +91,23 @@ const NSW_CLEAN_BACK: DLBackFields = {
   address_sticker: { present: true, parsed_address: NSW_CLEAN_ADDRESS },
 };
 
+// --- VIC DL fixtures (100% synthetic; VIC formats ASSUMED pilot-unverified) ---
+
+const VIC_CLEAN_ADDRESS = "7 COLLINS ST MELBOURNE VIC 3000";
+
+const VIC_CLEAN_FRONT: DLFrontFields = {
+  licence_number: "123456789",
+  full_name: "ALEX JORDAN CITIZEN",
+  dob: "1990-01-01",
+  address: VIC_CLEAN_ADDRESS,
+  expiry_date: "2030-01-01",
+};
+
+const VIC_CLEAN_BACK: DLBackFields = {
+  card_number: "987654",
+  address_sticker: { present: true, parsed_address: VIC_CLEAN_ADDRESS },
+};
+
 const FIXTURES: Record<string, Fixture> = {
   "aus-passport-clean": {
     id: "aus-passport-clean",
@@ -120,10 +137,26 @@ const FIXTURES: Record<string, Fixture> = {
     back: null,
     expected_failures: ["card_number_present"],
   },
+  "vic-dl-clean": {
+    id: "vic-dl-clean",
+    kind: "au_dl",
+    state: "VIC",
+    front: VIC_CLEAN_FRONT,
+    back: VIC_CLEAN_BACK,
+    expected_failures: [],
+  },
+  "vic-dl-missing-back": {
+    id: "vic-dl-missing-back",
+    kind: "au_dl",
+    state: "VIC",
+    front: VIC_CLEAN_FRONT,
+    back: null,
+    expected_failures: ["card_number_present"],
+  },
 };
 
-// --- Glimmer edge-case fixtures (100% synthetic, appended Task 3) ---
-// Visual bases come from Glimmer (`scripts/glimmer-art.mjs`, saved under
+// --- Image edge-case fixtures (100% synthetic, appended Task 3) ---
+// Visual bases come from Muse Image (`scripts/image-art.mjs`, saved under
 // `fixtures/art/`); the MRZ and card-number regions above are composed
 // programmatically exactly like the originals, so ground truth is exact
 // and independent of the art. Both are clean: expected_failures [].

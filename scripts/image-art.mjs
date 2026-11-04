@@ -1,8 +1,8 @@
-// Glimmer edge-case fixture art (Meta phase Task 3, manual tool).
-// Calls Glimmer once per fixture for the VISUAL BASE ONLY (backdrop);
+// Muse Image edge-case fixture art (manual tool; Rev 2 §11 art role).
+// Calls Muse Image once per fixture for the VISUAL BASE ONLY (backdrop);
 // MRZ + card-number regions are composed programmatically in
 // src/fixtures.ts, so ground truth stays exact regardless of the art.
-// Usage: npm run build && node scripts/glimmer-art.mjs
+// Usage: npm run build && node scripts/image-art.mjs
 // Requires META_API_KEY (env or .env, never committed). Appends spend to
 // docs/spend.md on success. Exits non-zero without writing on any failure.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -34,11 +34,15 @@ try {
 
 const KEY = process.env.META_API_KEY;
 if (!KEY) {
-  console.error("glimmer-art: META_API_KEY not set (env or .env)");
+  console.error("image-art: META_API_KEY not set (env or .env)");
   process.exit(1);
 }
 
 const { META_MODELS, PRICING } = await import("../dist/meta-models.js");
+if (!META_MODELS.image || !PRICING[META_MODELS.image]) {
+  console.error("image-art: stale dist, run npm run build");
+  process.exit(1);
+}
 
 // Backdrops only: each prompt leaves the machine-readable zone blank —
 // the MRZ / card number is composed programmatically afterwards.
@@ -59,7 +63,7 @@ const JOBS = [
   },
 ];
 
-/** Extract base64 image bytes from a Glimmer payload (provisional shapes). */
+/** Extract base64 image bytes from an Image payload (provisional shapes). */
 function imageBase64(payload) {
   const candidates = [
     payload?.image_base64,
@@ -87,32 +91,32 @@ for (const job of JOBS) {
         "content-type": "application/json",
         authorization: `Bearer ${KEY}`,
       },
-      body: JSON.stringify({ model: META_MODELS.glimmer, input: job.prompt }),
+      body: JSON.stringify({ model: META_MODELS.image, input: job.prompt }),
       signal: controller.signal,
     });
     if (!response.ok) {
       const snippet = (await response.text()).slice(0, 300);
-      throw new Error(`Glimmer responded ${response.status}: ${snippet}`);
+      throw new Error(`Image responded ${response.status}: ${snippet}`);
     }
     payload = await response.json();
   } catch (error) {
-    console.error(`glimmer-art: ${job.id} failed: ${error.message}`);
+    console.error(`image-art: ${job.id} failed: ${error.message}`);
     process.exit(1);
   } finally {
     clearTimeout(timer);
   }
   const b64 = imageBase64(payload);
   if (!b64) {
-    console.error(`glimmer-art: ${job.id} returned no image (keys: ${Object.keys(payload ?? {}).join(",")})`);
+    console.error(`image-art: ${job.id} returned no image (keys: ${Object.keys(payload ?? {}).join(",")})`);
     process.exit(1);
   }
   writeFileSync(join(artDir, `${job.id}.png`), Buffer.from(b64, "base64"));
   calls++;
-  console.log(`glimmer-art: wrote fixtures/art/${job.id}.png`);
+  console.log(`image-art: wrote fixtures/art/${job.id}.png`);
 }
 
 // Append spend (est. per-call price × calls) to the durable ledger.
-const perCall = PRICING[META_MODELS.glimmer].perCall;
+const perCall = PRICING[META_MODELS.image].perCall;
 const est = calls * perCall;
 const date = new Date().toISOString().slice(0, 10);
 const spendPath = join(root, "docs", "spend.md");
@@ -121,7 +125,7 @@ const totalMatch = spend.match(/Running total: \*\*\$([\d.]+)\*\*/);
 const total = (totalMatch ? Number(totalMatch[1]) : 0) + est;
 spend = spend.replace(
   /Running total: \*\*\$[\d.]+\*\*/,
-  `| ${date} | 3 | ${META_MODELS.glimmer} | ${calls} | ${est.toFixed(2)} | ${total.toFixed(2)} | Fixture visual bases (backdrop only; MRZ composed programmatically). |\n\nRunning total: **$${total.toFixed(2)}**`,
+  `| ${date} | 3 | ${META_MODELS.image} | ${calls} | ${est.toFixed(2)} | ${total.toFixed(2)} | Fixture visual bases (backdrop only; MRZ composed programmatically). |\n\nRunning total: **$${total.toFixed(2)}**`,
 );
 writeFileSync(spendPath, spend);
-console.log(`glimmer-art: spend +$${est.toFixed(2)} total $${total.toFixed(2)}`);
+console.log(`image-art: spend +$${est.toFixed(2)} total $${total.toFixed(2)}`);

@@ -31,3 +31,33 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-customer-view.md`
   summary: Keep check evidence out of end-user API payloads, not just rendered HTML (step JSON still carries the full report; /api/run/:id serves fixture reports openly).
   evidence: verification found the audience split is render-level per spec; true payload-hardening changes pinned API shapes and needs a spec-level decision.
+- source_spec: `_bmad-output/implementation-artifacts/spec-meta-live-reachability.md`
+  summary: Concatenate multi-part Responses text instead of first-part-only when an observed multi-part payload defines join semantics.
+  evidence: review found responseText returns the first output_text part; all observed payloads carry one part.
+- source_spec: `_bmad-output/implementation-artifacts/spec-meta-live-reachability.md`
+  summary: Handle OpenAI-style array-of-parts choices content when an observed OpenRouter array payload exists.
+  evidence: review found content typed string-only (pre-existing, safe-direction local fallback).
+- source_spec: `_bmad-output/implementation-artifacts/spec-meta-live-reachability.md`
+  summary: Design a custom-model escape hatch for the unconditional reasoning param if a META_TEXT_MODEL target rejects it.
+  evidence: review found no env override; retry is a spec non-goal and no rejecting model is known.
+- source_spec: `_bmad-output/implementation-artifacts/spec-auto-capture.md`
+  summary: Harden veto-adjacent deny phrasing ("no wait", "no wait, lock now") so a hold-off attempt cannot purge the run.
+  evidence: review confirmed the deny regex matches bare "no" by documented contract, making the purge specified behavior, but the trap is new with the wait intent and needs an intent-level fix (confirm-before-purge or carve-out).
+- source_spec: `_bmad-output/implementation-artifacts/spec-auto-capture.md`
+  summary: Harden veto phrasing against affirm precedence ("ok wait" reads as affirm and the arm auto-fires).
+  evidence: review confirmed affirm matches bare "ok" by documented contract; widening veto precedence needs an intent-level decision, not a patch.
+- source_spec: `_bmad-output/implementation-artifacts/spec-auto-capture.md`
+  summary: Cover the client auto-fire clock (beat-to-lock timing, veto fall-through) with executing verification or a recorded manual on-device pass.
+  evidence: review verified the fire clock is pinned only by source-text checks; a wrong delay or dropped doLock stays green, and the spec gates client behavior on the manual run.
+- source_spec: none
+  summary: Run OCR on the captured document (server Meta vision on the locked crop) and send extracted details to the customer page.
+  evidence: split from the VIC+OCR intent as the second goal; VIC goes first to settle field shapes.
+- source_spec: `_bmad-output/implementation-artifacts/spec-doc-ocr.md`
+  summary: Cover the client takeCrop flow with executing verification (DOM/canvas harness) instead of source-text pins.
+  evidence: review verified a runtime-broken takeCrop stays green while all live locks silently degrade to fixture fallback; no harness precedent exists in the repo.
+- source_spec: `_bmad-output/implementation-artifacts/spec-doc-ocr.md`
+  summary: Add global rate limiting (per-IP/per-key lock and session-mint caps) at deployment; per-stage OCR attempt caps only bound single sessions.
+  evidence: party elicitation confirmed open session mint + per-session-only caps still allow multi-session spend loops once hosted publicly.
+- source_spec: `_bmad-output/implementation-artifacts/spec-doc-ocr.md`
+  summary: Parallelize OCR + narration on the lock path (or skip narration for fixed lock text) to cut the 16s serial worst case; client timeout + progress UI already bound the symptom.
+  evidence: party elicitation traced 8s OCR + 8s narration serially; threading pre-warmed narration through shared stepBody is structural.

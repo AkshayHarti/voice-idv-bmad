@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import app from "../dist/index.js";
+import app, { LOCK_NOW_UTTERANCE } from "../dist/index.js";
+import { AUTO_CAPTURE_BEAT, matchIntent } from "../dist/flow.js";
 
 // Goal 2 page structure: Halo tokens, assistant surfaces, capture loop
 // wiring. Source-literal assertions (no browser harness exists); the
@@ -143,6 +144,52 @@ test("telemetry stays numeric; v1 zero-heuristics are disclosed", async () => {
   assert.ok(html.includes("moire: 0"), "v1 moire zero disclosed");
 });
 
+test("auto-capture arms on the clean run with a fixed beat and vetoes", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("enterArm"), "arm entry runs the fire clock");
+  assert.ok(html.includes("BEAT_TWIN"), "fixed beat twin");
+  assert.ok(html.includes("Perfect — hold still, capturing."), "beat wording matches the server turn");
+  assert.ok(html.includes(AUTO_CAPTURE_BEAT), "served beat twin matches the server beat constant");
+  assert.ok(html.includes("cancelArmSilent"), "vetoes cancel silently");
+  assert.ok(html.includes("disarmToCoaching"), "vetoes resume coaching");
+  assert.ok(html.includes("armPulse"), "arm haptic pre-pulse");
+  assert.ok(html.includes("navigator.vibrate([12, 60, 12])"), "double pre-pulse distinct from the lock tick");
+  assert.ok(html.includes("startCaptureListener"), "capture-stage command listener");
+  assert.ok(html.includes("captureWatchdog"), "capture-stage command watchdog");
+  assert.ok(!html.includes("pendingRef !== null || armed === true"), "command listener stays live while Armed");
+  assert.ok(html.includes("fireFrameVetoed"), "fire-time frame re-grade");
+  assert.ok(html.includes("fireVetoes"), "consecutive fire-time vetoes counted");
+  assert.ok(html.includes("FIRE_VETO_OFFER"), "fire-veto loop has a spoken escape");
+  assert.ok(html.includes("one missed tick, never a dead loop"), "failed peek never sticks the sampler");
+  assert.ok(html.includes("err.status === 409 || err.status === 404"), "expired sessions keep Lock disabled");
+  assert.ok(html.includes("restartCaptureListener"), "recognizer restarts back off on persistent errors");
+  assert.ok(html.includes("speechSynthesis.cancel()"), "beat jumps the TTS queue at arm entry");
+  assert.ok(html.includes("prevLuma"), "motion baseline across samples");
+  assert.ok(html.includes("MOTION_THRESHOLD"), "motion veto threshold");
+  assert.ok(html.includes("LOCK_NOW_HEARD"), "lock-now command words");
+  assert.ok(html.includes("voiceLock"), "voice locks share the confirm landing");
+  assert.ok(html.includes("tickArm === armGen"), "mid-flight vetoes retire stale ticks");
+  assert.ok(html.includes("Lock ' + CAPTURE_SHORT[stage]"), "Lock naming carries the stage");
+});
+
+test("client and server command matchers agree on the lock/wait vocabulary", async () => {
+  const html = await getPage();
+  const lockHeard = eval(html.match(/const LOCK_NOW_HEARD = (\/.*?\/i);/)[1]);
+  const waitHeard = eval(html.match(/const WAIT_HEARD = (\/.*?\/i);/)[1]);
+  for (const s of ["lock", "lock it", "lock now", "lock this", "lock it now", "lock now please", "please lock now", "lock now!", "lock now?"]) {
+    assert.ok(LOCK_NOW_UTTERANCE.test(s), `server must fire on ${s}`);
+    assert.ok(lockHeard.test(s), `client must hear ${s}`);
+  }
+  for (const s of ["locker", "unlock now", "don't lock now"]) {
+    assert.ok(!LOCK_NOW_UTTERANCE.test(s), `server must ignore ${s}`);
+    assert.ok(!lockHeard.test(s), `client must ignore ${s}`);
+  }
+  for (const s of ["wait", "hold on", "hold off"]) {
+    assert.equal(matchIntent(s), "wait", `server must veto on ${s}`);
+    assert.ok(waitHeard.test(s), `client must hear ${s}`);
+  }
+});
+
 test("confirm card shows the snapshot with a verdict caption and the pair", async () => {
   const html = await getPage();
   assert.ok(html.includes("dockZone.append(card)"), "confirm card docks above the input");
@@ -188,8 +235,12 @@ test("stand-in path locks with a fixture label and generic verdict", async () =>
   assert.ok(html.includes("standin-label"), "fixture label styling");
   assert.ok(html.includes("Stand-in capture"), "fixture label instead of photo");
   assert.ok(html.includes("pendingStandin"), "stand-in review state");
-  const lockPosts = html.split("'/lock', {}").length - 1;
-  assert.ok(lockPosts >= 2, `live lock and stand-in lock both post /lock (found ${lockPosts})`);
+  // Live locks carry the locked crop; only the pixel-less stand-in posts bare.
+  const bareLockPosts = html.split("'/lock', {}").length - 1;
+  assert.equal(bareLockPosts, 1, `stand-in lock posts bare {} (found ${bareLockPosts})`);
+  assert.ok(html.includes("takeCrop"), "live lock grabs a downscaled crop");
+  assert.ok(html.includes("crop ? { crop } : {}"), "live lock attaches the crop when present");
+  assert.ok(html.includes("CROP_MAX_CHARS"), "crop capped client-side");
 });
 
 test("focus moves to the card heading and back to the spoken line", async () => {

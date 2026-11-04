@@ -493,8 +493,10 @@ test("telemetry and lock responses carry the additive capture keys", async () =>
   assert.deepEqual(keyShape(res), {
     advanced: "boolean",
     announced: "boolean",
+    armed: "boolean",
     captures: { array: [] },
     capturesPurged: "boolean",
+    cleanStreak: "number",
     customerLink: "string",
     fault: "string",
     faultCounts: {
@@ -609,6 +611,7 @@ test("retake re-instructs with the stage-appropriate prompt", async () => {
     assert.equal(redone.stage, stage);
     assert.equal(redone.turn, "instruct");
     assert.match(redone.text, pattern);
+    assert.match(redone.text, /say lock now anytime/);
   }
 });
 
@@ -647,8 +650,10 @@ test("denied and clean telemetry responses pin their shapes", async () => {
   assert.deepEqual(keyShape(denied), {
     advanced: "boolean",
     announced: "boolean",
+    armed: "boolean",
     captures: { array: [] },
     capturesPurged: "boolean",
+    cleanStreak: "number",
     customerLink: "string",
     fault: "object",
     faultCounts: {
@@ -702,4 +707,374 @@ test("denied and clean telemetry responses pin their shapes", async () => {
     text: "string",
     title: "string",
   });
+});
+
+test("four consecutive clean samples arm with the fixed beat; a fault vetoes", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  for (let i = 1; i <= 3; i++) {
+    const res = await sample(id, {});
+    assert.equal(res.cleanStreak, i);
+    assert.equal(res.armed, false);
+    assert.equal(res.turn, "progress");
+  }
+  const beat = await sample(id, {});
+  assert.equal(beat.cleanStreak, 4);
+  assert.equal(beat.armed, true);
+  assert.equal(beat.turn, "progress");
+  assert.equal(beat.text, "Perfect — hold still, capturing.");
+  assert.equal(beat.announced, true);
+  assert.ok(beat.transcript.some((l) => l.text === beat.text));
+  // The run stays armed while clean (the client holds mid-arm silence;
+  // the server keeps announcing truthfully underneath).
+  const held = await sample(id, {});
+  assert.equal(held.armed, true);
+  assert.equal(held.cleanStreak, 5);
+  assert.equal(held.turn, "progress");
+  // A fault vetoes the run with the re-arm line, and the fault streak
+  // underneath keeps counting so coaching resumes mid-episode.
+  const vetoed = await sample(id, { glare: 0.9 });
+  assert.equal(vetoed.armed, false);
+  assert.equal(vetoed.cleanStreak, 0);
+  assert.equal(vetoed.turn, "progress");
+  assert.equal(vetoed.text, "Lost the steady frame — hold still and I'll try again.");
+  assert.equal(vetoed.announced, true);
+  const resumed = await sample(id, { glare: 0.9 });
+  assert.equal(resumed.turn, "re-ask");
+  assert.equal(resumed.text, "Ease the top back, out of the glare.");
+});
+
+test("motion vetoes an armed run without coaching a new fault", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  for (let i = 0; i < 4; i++) await sample(id, {});
+  const vetoed = await sample(id, { motion: 0.9 });
+  assert.equal(vetoed.armed, false);
+  assert.equal(vetoed.cleanStreak, 0);
+  assert.equal(vetoed.turn, "progress");
+  assert.equal(vetoed.text, "Lost the steady frame — hold still and I'll try again.");
+  assert.equal(vetoed.announced, true);
+  assert.equal(vetoed.fault, null);
+  assert.equal(vetoed.lockReady, true);
+  const resumed = await sample(id, {});
+  assert.equal(resumed.turn, "progress");
+  assert.equal(resumed.cleanStreak, 1);
+});
+
+test("three vetoes diagnose; a lock resets the veto streak", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  const texts = [];
+  for (let cycle = 0; cycle < 3; cycle++) {
+    let crossing = null;
+    for (let i = 0; i < 4; i++) crossing = await sample(id, {});
+    // Re-arm beats announce even back-to-back (new state, not a repeat).
+    assert.equal(crossing.text, "Perfect — hold still, capturing.");
+    assert.equal(crossing.announced, true);
+    texts.push((await sample(id, { motion: 0.9 })).text);
+  }
+  assert.equal(texts[0], "Lost the steady frame — hold still and I'll try again.");
+  assert.equal(texts[1], "Lost the steady frame — hold still and I'll try again.");
+  assert.equal(
+    texts[2],
+    "Framing keeps shifting — rest your arms on something steady and I'll try again.",
+  );
+  await lock(id);
+  await retake(id);
+  for (let i = 0; i < 4; i++) await sample(id, {});
+  const vetoed = await sample(id, { motion: 0.9 });
+  assert.equal(vetoed.text, "Lost the steady frame — hold still and I'll try again.");
+
+  // A lock clears a nonzero streak: 2 vetoes, lock, retake, re-arm, veto —
+  // without the reset the third lifetime veto would wrongly diagnose.
+  const id2 = await start("nsw-dl-clean");
+  await say(id2, "I consent");
+  for (let cycle = 0; cycle < 2; cycle++) {
+    for (let i = 0; i < 4; i++) await sample(id2, {});
+    await sample(id2, { motion: 0.9 });
+  }
+  await lock(id2);
+  await retake(id2);
+  for (let i = 0; i < 4; i++) await sample(id2, {});
+  const cleared = await sample(id2, { motion: 0.9 });
+  assert.equal(cleared.text, "Lost the steady frame — hold still and I'll try again.");
+
+  // A deliberate wait breaks the streak too: veto, veto, wait, veto speaks
+  // the re-arm line, never the shifting-framing diagnose.
+  const id3 = await start("nsw-dl-clean");
+  await say(id3, "I consent");
+  for (let cycle = 0; cycle < 2; cycle++) {
+    for (let i = 0; i < 4; i++) await sample(id3, {});
+    await sample(id3, { motion: 0.9 });
+  }
+  await say(id3, "wait");
+  for (let i = 0; i < 4; i++) await sample(id3, {});
+  const held = await sample(id3, { motion: 0.9 });
+  assert.equal(held.text, "Lost the steady frame — hold still and I'll try again.");
+});
+
+test('"wait" cancels the arm with the hold-off line; coaching resumes', async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  for (let i = 0; i < 4; i++) await sample(id, {});
+  const held = await say(id, "wait");
+  assert.equal(held.turn, "progress");
+  assert.equal(held.text, "Okay, holding off — say lock now when you're ready.");
+  assert.equal(held.stage, "awaiting_doc_front");
+  assert.equal(held.intent, "wait");
+  const next = await sample(id, {});
+  assert.equal(next.armed, false, "a fresh clean run must re-arm");
+  assert.equal(next.cleanStreak, 1);
+  const heldAgain = await say(id, "hold on");
+  assert.equal(heldAgain.text, "Okay, holding off — say lock now when you're ready.");
+  const heldOff = await say(id, "hold off");
+  assert.equal(heldOff.text, "Okay, holding off — say lock now when you're ready.");
+  assert.equal(heldOff.intent, "wait");
+  const resumed = await sample(id, {});
+  assert.equal(resumed.cleanStreak, 1);
+  // Outside capture there is nothing to hold off: wait reads as unheard.
+  const id2 = await start("nsw-dl-clean");
+  const consent = await say(id2, "wait");
+  assert.equal(consent.turn, "re-ask");
+  assert.match(consent.text, /I consent/);
+});
+
+test('"lock now" locks immediately with the same confirm landing as a tap', async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  await sample(id, {});
+  const voiced = await say(id, "lock now");
+  assert.match(voiced.pendingCapture, /^cap_\d+_[0-9a-f]{6}$/);
+  assert.match(voiced.text, /captured front/);
+  assert.equal(voiced.turn, "progress");
+  assert.equal(voiced.panel.primitive, "retake-pair");
+  assert.equal(voiced.verdict, "Front captured: sharp, all four corners in.");
+  const heard = voiced.transcript.filter((l) => l.who === "you").pop();
+  assert.equal(heard.text, "lock now");
+  await retake(id);
+
+  // A lock-now aimed at an open pair holds it open (no re-lock, no clobber).
+  const tapped = await lock(id);
+  const held = await say(id, "lock now");
+  assert.equal(held.pendingCapture, tapped.pendingCapture);
+  assert.equal(held.turn, "progress");
+  assert.equal(held.panel.primitive, "retake-pair");
+  assert.match(held.text, /captured front/);
+
+  // A wait aimed at an open pair also holds it open (no hold-off turn,
+  // no nudge — every wait spelling behaves the same behind a pair).
+  for (const utterance of ["wait", "hold on", "hold off"]) {
+    const waited = await say(id, utterance);
+    assert.equal(waited.pendingCapture, tapped.pendingCapture, utterance);
+    assert.equal(waited.panel.primitive, "retake-pair", utterance);
+    assert.match(waited.text, /captured front/, utterance);
+  }
+  await retake(id);
+
+  // A second lock POST behind an open pair holds the first card, no clobber —
+  // same ref, same verdict (never a generic fallback for a sharp frame).
+  await sample(id, {});
+  const first = await lock(id);
+  assert.equal(first.verdict, "Front captured: sharp, all four corners in.");
+  const second = await lock(id);
+  assert.equal(second.pendingCapture, first.pendingCapture);
+  assert.equal(second.verdict, first.verdict);
+  await retake(id);
+
+  // Outside capture, "lock now" is just chatter (no lock).
+  const id2 = await start("nsw-dl-clean");
+  const consent = await say(id2, "lock now");
+  assert.equal(consent.pendingCapture, null);
+  assert.equal(consent.turn, "re-ask");
+});
+
+test("an armed run never re-asks: every armed turn is progress", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  for (let i = 0; i < 8; i++) {
+    const res = await sample(id, {});
+    assert.equal(res.turn, "progress", `sample ${i + 1}`);
+    if (i >= 3) assert.equal(res.armed, true, `sample ${i + 1}`);
+  }
+});
+
+test("a stage that never arms gets one proactive Lock offer, then coaching", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  const OFFER = "Still lining up — say lock now anytime to capture what I see.";
+  let offerAt = -1;
+  let offers = 0;
+  for (let i = 0; i < 70; i++) {
+    const res = await sample(id, { glare: 0.9 });
+    assert.equal(res.armed, false);
+    if (res.text === OFFER) {
+      offers += 1;
+      if (offerAt === -1) offerAt = i;
+    }
+  }
+  assert.equal(offerAt, 59, "offer fires on the 60th sample without an arm");
+  assert.equal(offers, 1, "the offer fires once per stage");
+  const tail = await sample(id, { glare: 0.9 });
+  assert.notEqual(tail.text, OFFER);
+
+  // A stage that armed never offers.
+  const id2 = await start("nsw-dl-clean");
+  await say(id2, "I consent");
+  for (let i = 0; i < 4; i++) await sample(id2, {});
+  for (let i = 0; i < 65; i++) {
+    const res = await sample(id2, { glare: 0.9 });
+    assert.notEqual(res.text, OFFER);
+  }
+});
+
+test("the clean run resets on advance, retake, deny, and camera loss", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  await sample(id, {});
+  await sample(id, {});
+  await sample(id, {});
+  await fire(id, "front_captured");
+  const moved = await sample(id, {});
+  assert.equal(moved.cleanStreak, 1);
+
+  const id2 = await start("nsw-dl-clean");
+  await say(id2, "I consent");
+  await sample(id2, {});
+  await lock(id2);
+  await retake(id2);
+  const redone = await sample(id2, {});
+  assert.equal(redone.cleanStreak, 1);
+
+  const id3 = await start("nsw-dl-clean");
+  await say(id3, "I consent");
+  await sample(id3, {});
+  await sample(id3, {});
+  await say(id3, "revoke consent");
+  await say(id3, "ready");
+  const fresh = await sample(id3, {});
+  assert.equal(fresh.cleanStreak, 1);
+
+  const id4 = await start("nsw-dl-clean");
+  await say(id4, "I consent");
+  await sample(id4, {});
+  await sample(id4, {});
+  const parked = await sample(id4, { denied: true });
+  assert.equal(parked.cleanStreak, 0);
+  assert.equal(parked.armed, false);
+
+  // Per-stage offer/veto state never leaks across advances.
+  const OFFER = "Still lining up — say lock now anytime to capture what I see.";
+  const id5 = await start("nsw-dl-clean");
+  await say(id5, "I consent");
+  for (let i = 0; i < 59; i++) await sample(id5, { glare: 0.9 });
+  await fire(id5, "front_captured");
+  await fire(id5, "frames_done");
+  const coached = await sample(id5, { glare: 0.9 });
+  assert.notEqual(coached.text, OFFER);
+
+  const id6 = await start("nsw-dl-clean");
+  await say(id6, "I consent");
+  for (let cycle = 0; cycle < 2; cycle++) {
+    for (let i = 0; i < 4; i++) await sample(id6, {});
+    await sample(id6, { motion: 0.9 });
+  }
+  await fire(id6, "front_captured");
+  await fire(id6, "frames_done");
+  for (let i = 0; i < 4; i++) await sample(id6, {});
+  const rearmed = await sample(id6, { motion: 0.9 });
+  assert.equal(rearmed.text, "Lost the steady frame — hold still and I'll try again.");
+});
+
+test("garbage telemetry never faults or arms; huge readings fail closed", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  const garbage = await sample(id, { glare: "lots", dark: null, motion: "fast" });
+  assert.equal(garbage.fault, null);
+  assert.equal(garbage.cleanStreak, 1);
+  const huge = await sample(id, { skew: 1e9 });
+  assert.equal(huge.fault, "skew");
+  assert.equal(huge.armed, false);
+  assert.equal(huge.cleanStreak, 0);
+});
+
+test("stale clean samples restart the run instead of arming", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  for (let i = 0; i < 3; i++) await sample(id, {});
+  await new Promise((r) => setTimeout(r, 500));
+  const stale = await sample(id, {});
+  assert.equal(stale.cleanStreak, 1, "a 500ms-old run does not extend");
+  assert.equal(stale.armed, false);
+});
+
+test("stray samples behind an open pair never rebuild the run", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  await lock(id);
+  for (let i = 0; i < 5; i++) {
+    const res = await sample(id, {});
+    assert.equal(res.armed, false);
+    assert.equal(res.cleanStreak, 0);
+  }
+});
+
+test("capture instructs carry the auto-capture contract line", async () => {
+  const id = await start("nsw-dl-clean");
+  const consented = await say(id, "I consent");
+  assert.match(consented.text, /capture automatically when it's steady/);
+  assert.match(consented.text, /say lock now anytime/);
+  await fire(id, "front_captured");
+  const back = await fire(id, "frames_done");
+  assert.match(back.text, /say lock now anytime/);
+  await fire(id, "back_captured");
+  const challenge = await fire(id, "frames_done");
+  assert.match(challenge.text, /say lock now anytime/);
+  const selfie = await fire(id, "challenge_done");
+  assert.match(selfie.text, /say lock now anytime/);
+
+  const pid = await start("aus-passport-clean");
+  const pentry = await say(pid, "I consent");
+  assert.match(pentry.text, /say lock now anytime/);
+});
+
+test('"lock now" accepts natural variants; negations still deny first', async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  for (const utterance of [
+    "lock", "lock it", "lock now", "lock this",
+    "lock it now", "lock now please", "please lock now",
+  ]) {
+    await sample(id, {});
+    const locked = await say(id, utterance);
+    assert.match(locked.pendingCapture, /^cap_\d+_[0-9a-f]{6}$/, utterance);
+    assert.equal(locked.turn, "progress", utterance);
+    assert.equal(locked.panel.primitive, "retake-pair", utterance);
+    await retake(id);
+  }
+  const id2 = await start("nsw-dl-clean");
+  await say(id2, "I consent");
+  const denied = await say(id2, "don't lock now");
+  assert.equal(denied.intent, "deny");
+  assert.equal(denied.stage, "idle");
+  assert.equal(denied.capturesPurged, true);
+  assert.equal(denied.pendingCapture, null);
+});
+
+test("strays behind an open pair never advance the offer; retake restarts the runway", async () => {
+  const id = await start("nsw-dl-clean");
+  await say(id, "I consent");
+  const OFFER = "Still lining up — say lock now anytime to capture what I see.";
+  for (let i = 0; i < 55; i++) await sample(id, { glare: 0.9 });
+  await lock(id);
+  for (let i = 0; i < 10; i++) {
+    const stray = await sample(id, {});
+    assert.equal(stray.armed, false);
+  }
+  await retake(id);
+  // 65 counted samples would offer on the next tick; the fix restarts the
+  // runway at retake, so coaching resumes instead.
+  for (let i = 0; i < 6; i++) {
+    const res = await sample(id, { glare: 0.9 });
+    assert.notEqual(res.text, OFFER, `post-retake sample ${i + 1}`);
+  }
 });

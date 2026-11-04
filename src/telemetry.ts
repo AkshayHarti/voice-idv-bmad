@@ -24,6 +24,8 @@ export interface Telemetry {
   screenshot?: boolean | number;
   /** Back of card still missing (truthy counts). */
   missingBack?: boolean | number;
+  /** Frame-to-frame motion proxy, 0–1 (client mean-abs-diff of 32×32 luma). */
+  motion?: number;
   /** Consecutive coaching turns already spoken for this issue. */
   turns?: number;
 }
@@ -93,6 +95,23 @@ export function isLockReady(t: Telemetry): boolean {
 
 /** Alias for `isLockReady`. */
 export const lockReady = isLockReady;
+
+/**
+ * Consecutive clean samples that arm auto-capture (~0.8 s at 5 Hz). The
+ * beat fires on the crossing sample; the lock lands ≥1.5 s later only if
+ * every sample since stayed arm-clean with no veto.
+ */
+export const CLEAN_RUN_ARM = 4;
+
+/**
+ * Arm-clean predicate: no fault AND no motion veto. Motion never coaches
+ * as its own fault (no new FaultKey — `faultKey`, `coach`, and
+ * `isLockReady` all ignore it); it only gates the clean run, so a moving
+ * frame can still manual-lock but never auto-arms.
+ */
+export function isArmClean(t: Telemetry): boolean {
+  return faultKey(t) === null && !over(t.motion);
+}
 
 function say(kind: TurnKind, text: string): Turn {
   return { kind, text };

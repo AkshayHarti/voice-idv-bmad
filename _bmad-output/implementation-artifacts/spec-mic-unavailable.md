@@ -24,6 +24,7 @@ context: ["{project-root}/docs/specs/2026-11-02-voice-assistant-idv-spec.md"]
 - `test/page.test.js`: tripwire test for guard/remedy strings plus a negative assertion that the latch is gone.
 - Suite: 89 tests / 88 pass / 0 fail / 1 skip (live-meta, no key).
 - Review patches: shared abandon() teardown with generation guard; network branch with own message; Start resets mic state and retires generations; typed submits break silence streaks; messages reworded (no "speak" promise, browser-neutral, Start-based recovery).
+- Elicitation evidence (5 Whys): Chrome and Safari remember mic denial instead of re-prompting, so retry-next-turn on denial would be prompt-safe; park-until-Start retained deliberately as the calmer UX with cheap recovery this early in a run.
 
 ## Spec Change Log
 
