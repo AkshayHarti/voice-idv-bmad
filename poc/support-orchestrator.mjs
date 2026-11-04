@@ -280,7 +280,7 @@ ws.on("message", (data, isBinary) => {
       break;
     case "speechComplete":
       console.log(`\n\n[Turn ${msg.turnId} complete]: "${msg.transcript}"`);
-      void queryLlamaBrain(msg.turnId, msg.transcript);
+      trackLlm(queryLlamaBrain(msg.turnId, msg.transcript));
       break;
     case "speaker":
       console.log(`\n👤 speaker: ${msg.label ?? msg.speaker ?? "?"}`);
@@ -306,9 +306,18 @@ ws.on("close", async (code, reasonBuf) => {
     console.error("   Hint: 1006 before the handshake ack usually means the WS upgrade never completed —");
     console.error("   check direct egress to wss://api.meta.ai (no MITM proxy), then retry.");
   }
-  await sayChain;
+  // Late turns may still be answering: drain LLM jobs and TTS first.
+  await Promise.allSettled([...llmJobs, sayChain]);
   setTimeout(() => process.exit(acked ? 0 : 1), 500);
 });
+
+// In-flight LLM turns, drained before exit so a turn near end-of-stream
+// still gets its answer + spoken sentences.
+const llmJobs = new Set();
+function trackLlm(job) {
+  llmJobs.add(job);
+  void job.finally(() => llmJobs.delete(job));
+}
 
 // Paced realtime pump: 80 ms frames, then half-close and await the flush.
 function pumpAudio() {

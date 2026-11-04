@@ -69,10 +69,13 @@ and [schemas](https://dev.meta.ai/docs/api-reference/voice/schemas):
   real answer text. Requires `max_tokens: 1000` — the model spends
   ~118 reasoning tokens before answering, and 120 starves it to
   `finish_reason: length` with null content.
-- Realtime WS: **not verifiable from the build sandbox** (egress proxy
-  breaks WS upgrades — even echo servers 1006). The handshake, frame
-  pacing, and event dispatch follow the API reference exactly; run the
-  script on your machine to prove the audio leg.
+- Realtime WS end-to-end on an 18 s voice clip: handshake ack ~1 s,
+  partials stream while speaking, `speechStart`/`speechEnd`/
+  `speechComplete` per turn, clean close 1000. LLM TTFT ~2 s;
+  sentence-split answers speak as they generate. Total POC spend
+  ≈ $0.001 (18 s audio + 2 short answers).
+- Sockets must be `ws`, not Node's built-in WebSocket: the built-in
+  client attempts the upgrade over HTTP/2 and dies with 1006.
 
 ## Notes / next steps
 
