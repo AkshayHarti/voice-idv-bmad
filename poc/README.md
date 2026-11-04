@@ -77,11 +77,22 @@ and [schemas](https://dev.meta.ai/docs/api-reference/voice/schemas):
 - Sockets must be `ws`, not Node's built-in WebSocket: the built-in
   client attempts the upgrade over HTTP/2 and dies with 1006.
 
-## Notes / next steps
+## TTS stage (the non-robotic voice)
 
-- TTS here is macOS `say` (or log-only). Meta has no TTS model on
-  Model API — Transcribe "does not synthesize speech." Swap `speak()`
-  for a streaming TTS (Cartesia/ElevenLabs/OpenAI) for production feel.
+Meta has no TTS on Model API — Transcribe "does not synthesize speech"
+— so the speaking leg is OpenAI: each completed sentence is synthesized
+(`gpt-4o-mini-tts`, voice `nova`, MP3) and played via `afplay`, serially,
+while later sentences still generate. Barge-in kills playback.
+
+- Key: `OPENAI_API_KEY` (must be valid — a 401 falls through silently).
+- Overrides: `VOICE_POC_TTS_MODEL`, `VOICE_POC_TTS_VOICE`.
+- Ladder per sentence: `gpt-4o-mini-tts` → `tts-1` → macOS `say` →
+  log-only; `--no-audio` skips synthesis entirely.
+- Verified 2026-11-04: fallback ladder end-to-end (exit 0). The neural
+  voice itself needs a valid key — the shell's current key 401s
+  (`invalid_api_key`), so refresh it to hear the difference.
+
+## Notes / next steps
 - `keywords[]` in the handshake already biases product-name
   recognition (see `--keywords`); spelling is not guaranteed.
 - Telephony (Twilio Media Streams / SIP) replaces the file pump:

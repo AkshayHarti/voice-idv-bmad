@@ -18,7 +18,9 @@
 // Protocol: https://dev.meta.ai/docs/api-reference/voice/realtime
 // Key: MODEL_API_KEY, META_API_KEY, or the repo .env META_API_KEY.
 // The key is never printed.
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { execFile } from "node:child_process";
 import WebSocket from "ws";
 
@@ -67,32 +69,93 @@ try {
 }
 console.log(`Input: ${pcmPath} (${pcm.length} bytes ≈ ${(pcm.length / 48000).toFixed(1)} s @ 24 kHz)`);
 
-// --- TTS: serial queue over macOS `say`, killed on barge-in. ---------------
-let sayChain = Promise.resolve();
-let sayChild = null;
+// --- TTS: OpenAI neural voice per sentence, macOS `say` fallback. ---------
+// Meta has no TTS on Model API, so the speaking leg is OpenAI (keyed via
+// OPENAI_API_KEY). Serial queue; barge-in kills playback + clears it.
+const TTS_URL = "https://api.openai.com/v1/audio/speech";
+const TTS_MODEL = process.env.VOICE_POC_TTS_MODEL ?? "gpt-4o-mini-tts";
+const TTS_VOICE = process.env.VOICE_POC_TTS_VOICE ?? "nova";
+const OPENAI_KEY = process.env.OPENAI_API_KEY ?? null;
+let audioChain = Promise.resolve();
+let audioChild = null;
 let ttsMuted = false;
+let ttsSeq = 0;
+
+/** One sentence to spoken MP3 bytes (null on any failure). Never throws. */
+async function synthesizeOpenAI(sentence) {
+  if (!OPENAI_KEY) return null;
+  for (const model of [TTS_MODEL, "tts-1"]) {
+    try {
+      const res = await fetch(TTS_URL, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${OPENAI_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          input: sentence,
+          voice: TTS_VOICE,
+          response_format: "mp3",
+        }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const kind = res.headers.get("content-type") ?? "";
+      if (!res.ok || !kind.includes("audio/")) continue; // try the fallback model
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > 1000) return buf;
+    } catch { /* try the fallback model, then say */ }
+  }
+  return null;
+}
+
+function playFile(file) {
+  return new Promise((resolve) => {
+    const child = execFile("afplay", [file], () => {
+      if (audioChild === child) audioChild = null;
+      try { unlinkSync(file); } catch { /* already gone */ }
+      resolve();
+    });
+    audioChild = child;
+  });
+}
+
+function speakSay(sentence) {
+  return new Promise((resolve) => {
+    const child = execFile("say", [sentence], () => {
+      if (audioChild === child) audioChild = null;
+      resolve();
+    });
+    audioChild = child;
+  });
+}
+
 function speak(sentence) {
   if (!sentence) return;
   console.log(`🔊 [Synthesizing Audio]: "${sentence}"`);
   if (noAudio) return;
-  sayChain = sayChain.then(
-    () =>
-      new Promise((resolve) => {
-        if (ttsMuted) return resolve();
-        const child = execFile("say", [sentence], () => {
-          if (sayChild === child) sayChild = null;
-          resolve();
-        });
-        sayChild = child;
-      }),
-  );
+  audioChain = audioChain.then(async () => {
+    if (ttsMuted) return;
+    const t0 = Date.now();
+    const mp3 = await synthesizeOpenAI(sentence);
+    if (ttsMuted) return;
+    if (mp3) {
+      console.log(`   voice: openai/${TTS_VOICE} (+${Date.now() - t0} ms synth)`);
+      const file = join(tmpdir(), `poc-tts-${process.pid}-${++ttsSeq}.mp3`);
+      writeFileSync(file, mp3);
+      await playFile(file);
+    } else {
+      console.log("   voice: say (fallback)");
+      await speakSay(sentence);
+    }
+  });
 }
 function bargeIn() {
   ttsMuted = true;
-  sayChain = Promise.resolve();
-  if (sayChild) {
-    try { sayChild.kill(); } catch { /* already gone */ }
-    sayChild = null;
+  audioChain = Promise.resolve();
+  if (audioChild) {
+    try { audioChild.kill(); } catch { /* already gone */ }
+    audioChild = null;
   }
   // Unmute on the next assistant turn (see handleTurn).
 }
@@ -180,7 +243,7 @@ async function queryLlamaBrain(turnId, userQuery) {
     }
     process.stdout.write("\n");
     flushSentences(turnId, "", true);
-    await sayChain;
+    await audioChain;
   } catch (err) {
     console.error(`\nLLM stream failure: ${err.message}`);
   }
@@ -212,7 +275,7 @@ async function queryResponsesFallback(turnId, userQuery) {
       "(no text)";
     console.log(`   ${String(text).trim()}`);
     flushSentences(turnId, String(text).trim(), true);
-    await sayChain;
+    await audioChain;
   } catch (err) {
     console.error(`Responses fallback failure: ${err.message}`);
   }
@@ -307,7 +370,7 @@ ws.on("close", async (code, reasonBuf) => {
     console.error("   check direct egress to wss://api.meta.ai (no MITM proxy), then retry.");
   }
   // Late turns may still be answering: drain LLM jobs and TTS first.
-  await Promise.allSettled([...llmJobs, sayChain]);
+  await Promise.allSettled([...llmJobs, audioChain]);
   setTimeout(() => process.exit(acked ? 0 : 1), 500);
 });
 
