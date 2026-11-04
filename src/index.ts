@@ -1568,8 +1568,6 @@ const PAGE = `<!doctype html>
   #panel .standin-label, #dockZone .standin-label { font-size:.85rem; color:var(--ink2); border:1px dashed #2b4a5e;
                           border-radius:6px; padding:.6rem .8rem; margin:.4rem 0; }
   #spoken:focus, #panel .ptitle:focus, #dockZone .ptitle:focus { outline:2px solid #35507e; outline-offset:2px; }
-  #panel .ptag { font-size:.66rem; letter-spacing:.08em; text-transform:uppercase;
-                 color:var(--inkfaint); margin-top:.6rem; }
   #panel ol.steps { list-style:none; padding:0; margin:0; display:flex; gap:.5rem; flex-wrap:wrap; }
   #panel ol.steps li { font-size:.78rem; padding:.3rem .6rem; border:1px solid #222B3A;
                        border-radius:6px; color:var(--ink2); display:block; border-bottom:1px solid #222B3A; }
@@ -2052,12 +2050,9 @@ function renderPanel(panel, fallbackText) {
   } else if (panel.primitive !== 'text') {
     // Unknown shape: fail closed to the text twin (already rendered above).
   }
-  if (panel.provider) {
-    const tag = document.createElement('div');
-    tag.className = 'ptag';
-    tag.textContent = panel.provider === 'Spark' ? 'Spark' : 'local templates';
-    card.append(tag);
-  }
+  // (Retired: the provider tag always read "local templates" — panels are
+  // local by design, and the label confused Meta-keyed runs. The server
+  // field stays for shape-pinned API twins.)
   // The confirm card docks above the input with the frame's view-follows
   // behavior; every other panel renders in the middle region.
   if (isConfirm) {
