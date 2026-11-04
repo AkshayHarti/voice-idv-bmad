@@ -585,6 +585,40 @@ test("keep during the OCR await attaches the read instead of burning it", async 
   });
 });
 
+test("re-tap during the OCR await collects a renderable pair card", async () => {
+  let entered = false;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const seen = [];
+  await withKeyedMeta(async () => {
+    const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
+    const id = created.body.sessionId;
+    await post(`/api/session/${id}/say`, { utterance: "I consent" });
+    const lockP = post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
+    for (let i = 0; i < 100 && !entered; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(entered, "OCR await entered before re-tap");
+    const held = await post(`/api/session/${id}/lock`, {});
+    assert.equal(held.body.panel.primitive, "retake-pair", "pair card renderable mid-await");
+    assert.match(held.body.text, /Keep it, or retake/);
+    assert.ok(held.body.pendingCapture, "held ref present");
+    assert.ok(held.body.verdict, "held verdict recomputed, never null");
+    release();
+    const first = await lockP;
+    assert.equal(first.body.pendingCapture, held.body.pendingCapture, "one ref, no double-mint");
+  }, {
+    seen,
+    wonderImpl: async () => {
+      entered = true;
+      await gate;
+      return { ok: true, json: async () => ({ output_text: FRONT_JSON }) };
+    },
+  });
+  const wonderCalls = seen.filter((m) => m === META_MODELS.wonder).length;
+  assert.equal(wonderCalls, 1, "racing re-tap burns no second OCR call");
+});
+
 test("deny during the OCR await abandons the lock; nothing resurrects", async () => {
   let entered = false;
   let release;

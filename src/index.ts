@@ -1136,13 +1136,24 @@ async function performLock(
   // card open instead of overwriting its ref — same step, same verdict.
   if (session.pendingCapture !== null) {
     const held = await stepBody(session, id, null, false);
-    // A lock racing the first lock's OCR await lands before pendingVerdict
-    // is set: recompute rather than serve a null verdict.
+    // A lock racing the first lock's OCR await lands before the pair turn
+    // exists: synthesize the pair presentation (text + panel) instead of
+    // inheriting the pre-lock turn, or the client sets pendingRef with no
+    // confirm card on the glass. Turns stay untouched (no duplicates).
+    const ref = session.pendingCapture;
+    const text = LOCK_TEXT[session.flow.stage] ?? "Captured. Keep it, or retake?";
     return {
       ...held,
+      text,
+      turn: "progress" as const,
       verdict:
         session.pendingVerdict ??
         qualityVerdict(session.flow.stage, session.lastSample),
+      panel: generatePanel("progress", session.flow.stage, {
+        text,
+        pending: true,
+        ref,
+      }),
     };
   }
   const ref = lockRef(session);
