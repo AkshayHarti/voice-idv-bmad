@@ -24,7 +24,7 @@ export interface ProviderConfig {
 }
 
 export interface NarrateRequest {
-  /** Closed Turn kind (consent, instruct, re-ask, replay, progress, warn, result, abort_confirm, review). */
+  /** Closed Turn kind (intro, consent, instruct, re-ask, replay, progress, warn, result, abort_confirm, review). */
   turn: string;
   /** Complete sentence from the flow machine; templates repeat it verbatim. */
   text: string;

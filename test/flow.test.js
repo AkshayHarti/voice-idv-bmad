@@ -123,7 +123,7 @@ test("camera_denied parks capture stages with warn guidance, ignores others", ()
   assert.match(parked.last_turn.text, /stand-in/);
   const idle = signal(startRun("nsw-dl-clean"), "camera_denied");
   assert.equal(idle.stage, "awaiting_consent");
-  assert.equal(idle.last_turn.kind, "consent");
+  assert.equal(idle.last_turn.kind, "intro");
 });
 
 test("every fired Turn carries its generated panel", () => {
@@ -149,9 +149,10 @@ test("deny purges captures and aborts to idle", () => {
   assert.equal(say(startRun("nsw-dl-clean"), "don't wait").last_intent, "deny");
 });
 
-test("all 9 Turn kinds are produced somewhere in the flow", () => {
+test("all 10 Turn kinds are produced somewhere in the flow", () => {
   const kinds = new Set();
-  kinds.add(startRun("nsw-dl-clean").last_turn.kind); // consent
+  kinds.add(startRun("nsw-dl-clean").last_turn.kind); // intro
+  kinds.add(signal(startRun("nsw-dl-clean"), "intro_done").last_turn.kind); // consent
   let c = say(startRun("nsw-dl-clean"), "ready");
   kinds.add(c.last_turn.kind); // instruct
   kinds.add(say(c, "blah blah").last_turn.kind); // re-ask
@@ -171,9 +172,29 @@ test("all 9 Turn kinds are produced somewhere in the flow", () => {
   }
   assert.equal(f.stage, "decided");
   kinds.add(f.last_turn.kind); // result
-  for (const k of ["consent", "instruct", "re-ask", "replay", "progress", "warn", "result", "abort_confirm", "review"]) {
+  for (const k of ["intro", "consent", "instruct", "re-ask", "replay", "progress", "warn", "result", "abort_confirm", "review"]) {
     assert.ok(kinds.has(k), `missing Turn kind: ${k}`);
   }
+});
+
+test("intro auto-advances to the consent ask; stray intro_done is ignored", () => {
+  const opened = startRun("nsw-dl-clean");
+  assert.equal(opened.stage, "awaiting_consent");
+  assert.equal(opened.last_turn.kind, "intro");
+  assert.match(opened.last_turn.text, /Aria/);
+  assert.match(opened.last_turn.text, /onboarding agent/);
+  const asked = signal(opened, "intro_done");
+  assert.equal(asked.stage, "awaiting_consent");
+  assert.equal(asked.last_turn.kind, "consent");
+  assert.match(asked.last_turn.text, /I consent/);
+  // Idempotent: a duplicate advance re-serves the identical consent turn.
+  const again = signal(asked, "intro_done");
+  assert.equal(again.last_turn.kind, "consent");
+  assert.equal(again.last_turn.text, asked.last_turn.text);
+  // Past the gate the event is a no-op, like any out-of-order signal.
+  const past = signal(say(opened, "I consent"), "intro_done");
+  assert.equal(past.stage, "awaiting_doc_front");
+  assert.equal(past.last_turn.kind, "instruct");
 });
 
 test("review gate holds the decision until confirm; stray confirms are ignored", () => {
