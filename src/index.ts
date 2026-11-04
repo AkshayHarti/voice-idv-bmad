@@ -32,7 +32,7 @@ import type { FlowState, Stage } from "./flow.js";
 import { buildMeasurements } from "./measurements.js";
 import { spendTotal } from "./meta-models.js";
 import { generatePanel } from "./panels.js";
-import { configuredProviders, narrate, ocrCrop, segment, templateNarration } from "./providers.js";
+import { configuredProviders, narrate, ocrCrop, segment, templateNarration, transcribeAudio } from "./providers.js";
 import type { OcrFields, ProviderName } from "./providers.js";
 import { redactRef } from "./redact.js";
 import { CLEAN_RUN_ARM, coach, FAULT_KEYS, faultKey, isArmClean, isLockReady } from "./telemetry.js";
@@ -251,6 +251,10 @@ export const OCR_ATTEMPTS_PER_STAGE = 3;
 const CROP_PATTERN = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]{100,}$/;
 /** Max gap between clean samples (2x the 200 ms cadence) that still extends the run. */
 export const STREAK_FRESH_MS = 400;
+/** Largest transcribe upload the server accepts (chars of data URL, ~24 s of 16 kHz mono WAV). */
+export const MAX_AUDIO_CHARS = 1_000_000;
+/** Transcribe uploads must be real WAV payloads: MIME allowlist + base64 floor. */
+const AUDIO_PATTERN = /^data:audio\/(wav|x-wav);base64,[A-Za-z0-9+/=]{100,}$/;
 
 const sessions = new Map<string, Session>();
 
@@ -939,6 +943,34 @@ app.post("/api/session/:id/signal", async (c) => {
 
   pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
   return c.json(await stepBody(session, c.req.param("id"), null, next.stage !== before));
+});
+
+/**
+ * Speech-to-text for one recorded utterance (primary ASR, spec §5).
+ * WAV in, transcript text out — never a 4xx for transcription itself
+ * (unreadable audio, outage, and silence all read as text: null so the
+ * client falls back to on-device recognition, then typed). Audio bytes
+ * are transcribed in-memory and dropped: never stored, never logged.
+ */
+app.post("/api/session/:id/transcribe", async (c) => {
+  if (!sessions.has(c.req.param("id"))) return c.json({ error: "unknown_session" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as { audio?: unknown };
+  const audio = typeof body.audio === "string" ? body.audio : "";
+  const comma = audio.indexOf(",");
+  const b64 = comma >= 0 ? audio.slice(comma + 1) : "";
+  if (!AUDIO_PATTERN.test(audio) || audio.length > MAX_AUDIO_CHARS || !b64) {
+    return c.json({
+      provider: "local",
+      text: null,
+      skipped: ["local: unreadable or oversize audio (no transcription attempted)"],
+    });
+  }
+  return c.json(
+    await transcribeAudio(
+      { audioBase64: b64, sessionId: c.req.param("id") },
+      { env: processEnv() },
+    ),
+  );
 });
 
 function num(v: unknown): number | undefined {

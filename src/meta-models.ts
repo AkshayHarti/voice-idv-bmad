@@ -6,8 +6,9 @@
 // Status 2026-11-03: UNVERIFIED — no live-key probe has succeeded yet
 // (sandbox egress outage; $0 spent). Re-verify live per §12 and update
 // these constants if the accepted IDs differ. Consumers import these
-// constants, never literals. Wonder/Image/Transcribe IDs are PROVISIONAL
-// placeholders pending §12 integration confirmation.
+// constants, never literals. Wonder/Image IDs are PROVISIONAL
+// placeholders pending §12 integration confirmation; Transcribe was
+// verified live 2026-11-04 (POST /v1/asr/transcribe, multipart).
 // Pricing units carry their basis; all estimates until the probe lands.
 
 export const META_MODELS = {
@@ -19,7 +20,7 @@ export const META_MODELS = {
   image: "muse-image-1.0",
   /** PROVISIONAL placeholder — confirm against the Meta model list (§12). */
   wonder: "muse-wonder-1.0",
-  /** PROVISIONAL placeholder (§5 names this id; still UNVERIFIED per §12). */
+  /** Live-verified 2026-11-04: listed by /v1/models, serves /v1/asr/transcribe. */
   transcribe: "muse-voice-transcribe-1.0",
 } as const;
 
@@ -51,7 +52,7 @@ export const PRICING: Record<string, ModelPrice> = {
   },
   [META_MODELS.transcribe]: {
     perCall: 0.0005,
-    unit: "USD est/call (~10s avg utterance @ $0.18/hr, PROVISIONAL id, UNVERIFIED)",
+    unit: "USD est/call (~10s avg utterance @ $0.18/hr, id VERIFIED live 2026-11-04)",
   },
 };
 

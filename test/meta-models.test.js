@@ -12,7 +12,7 @@ test("pinned model IDs match the Rev 2 §11 roster exactly", () => {
 });
 
 test("provisional pins are clearly marked (PROVISIONAL + UNVERIFIED)", () => {
-  for (const key of ["image", "wonder", "transcribe"]) {
+  for (const key of ["image", "wonder"]) {
     const price = PRICING[META_MODELS[key]];
     assert.ok(price, `${key} has a PRICING entry`);
     assert.match(price.unit, /PROVISIONAL/, `${key} unit marks PROVISIONAL`);
@@ -21,6 +21,13 @@ test("provisional pins are clearly marked (PROVISIONAL + UNVERIFIED)", () => {
   assert.match(PRICING[META_MODELS.glimmer].unit, /local run-weights/);
   assert.match(PRICING[META_MODELS.sam].unit, /UNVERIFIED/);
   assert.match(PRICING[META_MODELS.spark].unit, /UNVERIFIED/);
+});
+
+test("transcribe pin is live-verified, no longer provisional", () => {
+  const price = PRICING[META_MODELS.transcribe];
+  assert.match(price.unit, /VERIFIED live/);
+  assert.doesNotMatch(price.unit, /PROVISIONAL/);
+  assert.doesNotMatch(price.unit, /UNVERIFIED/);
 });
 
 test("every pin has a numeric PRICING entry per the spec roster", () => {
