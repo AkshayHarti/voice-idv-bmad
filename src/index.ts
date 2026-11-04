@@ -33,6 +33,8 @@ import { buildMeasurements } from "./measurements.js";
 import { spendTotal } from "./meta-models.js";
 import { generatePanel } from "./panels.js";
 import type { PanelRow } from "./panels.js";
+import { attachRelay } from "./asr_live.js";
+import type { RelayContext, RelaySocket } from "./asr_live.js";
 import { configuredProviders, narrate, ocrCrop, segment, templateNarration, transcribeAudio } from "./providers.js";
 import type { OcrFields, ProviderName } from "./providers.js";
 import { redactRef } from "./redact.js";
@@ -588,7 +590,80 @@ app.get("/api/run/:id", async (c) => {
   return c.json(evaluateFixture(id));
 });
 
-app.get("/api/providers", (c) => c.json(configuredProviders(processEnv())));
+app.get("/api/providers", async (c) => {
+  const voice = await ttsVoiceId(processEnv());
+  return c.json({
+    ...configuredProviders(processEnv()),
+    tts: voice !== "none",
+    ttsVoice: voice,
+  });
+});
+
+/**
+ * Local TTS sidecar voice id for the speech-out flag: seamless-v2, mms,
+ * unknown (up but unidentified), or none (down). Short fuse, never throws.
+ */
+async function ttsVoiceId(
+  env: Record<string, string | undefined>,
+): Promise<"seamless-v2" | "mms" | "unknown" | "none"> {
+  try {
+    const res = await fetch(`${env.VOICE_TTS_URL ?? "http://127.0.0.1:8765"}/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok || typeof res.json !== "function") return res.ok ? "unknown" : "none";
+    const health = (await res.json().catch(() => ({}))) as { model?: unknown };
+    const model = typeof health.model === "string" ? health.model.toLowerCase() : "";
+    if (model.includes("seamless")) return "seamless-v2";
+    if (model.includes("mms")) return "mms";
+    return "unknown";
+  } catch {
+    return "none";
+  }
+}
+
+/** Raw bytes to base64 without Buffer (Workers-safe, chunked for the stack). */
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 8192) {
+    bin += String.fromCharCode(...Array.from(bytes.subarray(i, i + 8192)));
+  }
+  return btoa(bin);
+}
+
+/**
+ * Speech-out for one turn: text in, WAV data URL out, via the local Meta
+ * TTS sidecar (Seamless v2 or MMS, per VOICE_TTS_URL). Never a 4xx for
+ * synthesis itself — outage/empty read as audio: null so the client
+ * falls back to browser synthesis.
+ */
+app.post("/api/tts", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { text?: unknown };
+  const text = typeof body.text === "string" ? body.text.trim().slice(0, 500) : "";
+  if (!text) {
+    return c.json({ audio: null, provider: "local", skipped: ["local: empty text (nothing to speak)"] });
+  }
+  try {
+    const base = processEnv().VOICE_TTS_URL ?? "http://127.0.0.1:8765";
+    const res = await fetch(`${base}/speak`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const kind = res.headers.get("content-type") ?? "";
+    if (!res.ok || !kind.includes("audio/")) throw new Error(`tts ${res.status}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length < 1000) throw new Error("tts returned no audio");
+    const voice = await ttsVoiceId(processEnv());
+    return c.json({
+      audio: "data:audio/wav;base64," + bytesToBase64(bytes),
+      provider: voice === "none" ? "local" : `${voice}-local`,
+      skipped: [],
+    });
+  } catch (error) {
+    return c.json({ audio: null, provider: "local", skipped: [`local: ${(error as Error).message}`] });
+  }
+});
 
 /** Standard step body: Turn payload plus its generated panel. */
 async function stepBody(
@@ -857,6 +932,20 @@ app.post("/api/session/:id/say", async (c) => {
   if (!session) return c.json({ error: "unknown_session" }, 404);
 
   const body = (await c.req.json().catch(() => ({}))) as { utterance?: string; crop?: unknown };
+  const out = await utteranceStep(session, c.req.param("id"), body);
+  return c.json(out.body, out.status);
+});
+
+/**
+ * One spoken (or relayed) utterance through the full voice chain: pair
+ * resolution, lock-now, review confirm, then say(). Shared by POST /say
+ * and the realtime relay so both hear identical behavior.
+ */
+async function utteranceStep(
+  session: Session,
+  id: string,
+  body: { utterance?: string; crop?: unknown },
+): Promise<{ status: 200 | 409; body: unknown }> {
   const utterance = String(body.utterance ?? "");
   // Voice equivalents for the open retake pair (closed intents untouched;
   // the advance still runs through the backend signal inside doKeep).
@@ -869,7 +958,7 @@ app.post("/api/session/:id/say", async (c) => {
     // splits "wait" (nudge) from "hold on" (hold-off turn).
     if (LOCK_NOW_UTTERANCE.test(utterance) || matchIntent(utterance) === "wait") {
       pushTurn(session, "you", utterance);
-      return c.json(await heldPairBody(session, c.req.param("id")));
+      return { status: 200, body: await heldPairBody(session, id) };
     }
     const resolved = resolvePair(utterance);
     if (resolved.kind === "keep" || resolved.kind === "retake") {
@@ -886,9 +975,9 @@ app.post("/api/session/:id/say", async (c) => {
           };
       const done =
         resolved.kind === "keep"
-          ? await doKeep(session, c.req.param("id"), utterance, echo)
-          : await doRetake(session, c.req.param("id"), utterance, echo);
-      return c.json(done.body, done.status);
+          ? await doKeep(session, id, utterance, echo)
+          : await doRetake(session, id, utterance, echo);
+      return { status: done.status, body: done.body };
     }
     if (resolved.kind === "reask") {
       pushTurn(session, "you", utterance);
@@ -906,7 +995,7 @@ app.post("/api/session/:id/say", async (c) => {
       };
       session.flow = { ...session.flow, last_turn: nudge };
       pushTurn(session, "system", nudge.text, nudge.kind);
-      return c.json(await stepBody(session, c.req.param("id"), null, false));
+      return { status: 200, body: await stepBody(session, id, null, false) };
     }
   }
   // Embedded or negated pair phrasing ("don't retake") holds the pair open:
@@ -917,7 +1006,7 @@ app.post("/api/session/:id/say", async (c) => {
     /retake|take\s+(it\s+|that\s+)?again/i.test(utterance)
   ) {
     pushTurn(session, "you", utterance);
-    return c.json(await heldPairBody(session, c.req.param("id")));
+    return { status: 200, body: await heldPairBody(session, id) };
   }
   // Manual-lock voice path: "lock now" on a capture stage with no open
   // pair fires immediately through the same confirm landing as a tap
@@ -930,7 +1019,7 @@ app.post("/api/session/:id/say", async (c) => {
     // Voice locks carry the same crop the tap path grabs: without it,
     // every voice run degrades to fixture fallback.
     const voiceCrop = typeof body.crop === "string" ? body.crop : null;
-    return c.json(await performLock(session, c.req.param("id"), utterance, voiceCrop));
+    return { status: 200, body: await performLock(session, id, utterance, voiceCrop) };
   }
   // Review-gate voice path: affirm ("yes"/"ok"/...) or bare "confirm" on
   // the review stage advances through the backend signal — speech never
@@ -949,14 +1038,14 @@ app.post("/api/session/:id/say", async (c) => {
       session.lastSample = null;
       resetArmState(session);
       pushTurn(session, "system", confirmed.last_turn?.text ?? "", confirmed.last_turn?.kind);
-      return c.json(await stepBody(session, c.req.param("id"), reviewIntent, true));
+      return { status: 200, body: await stepBody(session, id, reviewIntent, true) };
     }
   }
   const before = session.flow.stage;
   const next = say(session.flow, utterance);
   session.flow = next;
   // Full deny purge: captures are deleted on deny/revoke, not flagged.
-  if (next.last_intent === "deny") purgeCaptures(session, c.req.param("id"));
+  if (next.last_intent === "deny") purgeCaptures(session, id);
   // Voice veto: "wait" cancels the arm (a fresh clean run must re-arm)
   // and breaks the veto streak (a deliberate hold is not instability)
   // while coaching resumes underneath.
@@ -972,8 +1061,44 @@ app.post("/api/session/:id/say", async (c) => {
 
   pushTurn(session, "you", utterance);
   pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
-  return c.json(await stepBody(session, c.req.param("id"), next.last_intent, next.stage !== before));
-});
+  return { status: 200, body: await stepBody(session, id, next.last_intent, next.stage !== before) };
+}
+
+/**
+ * Realtime speech-in entry: bridges an accepted browser socket to Meta.
+ * Called by the local server's upgrade handler (serve.mjs) — Hono never
+ * sees upgrades. Unknown sessions and unkeyed servers close out without
+ * dialing Meta.
+ */
+export function attachAsrLive(
+  browser: unknown,
+  sessionId: string,
+  opts?: { openMeta?: RelayContext["openMeta"]; metaUrl?: string },
+): void {
+  const sock = browser as RelaySocket;
+  const fail = (code: number, reason: string): void => {
+    try {
+      sock.close(code, reason);
+    } catch {
+      /* already gone */
+    }
+  };
+  const session = sessions.get(sessionId);
+  if (!session) return fail(4404, "unknown session");
+  const key = processEnv().META_API_KEY ?? "";
+  if (!key) return fail(4401, "realtime not configured");
+  attachRelay(sock, {
+    sessionId,
+    metaKey: key,
+    metaUrl: opts?.metaUrl,
+    utterance: async (text) =>
+      (await utteranceStep(session, sessionId, { utterance: text })).body,
+    // Commands-mode gate mirrors the SR capture listener: only lock/wait
+    // phrasing advances; chatter is swallowed before say() sees it.
+    filter: (text) => LOCK_NOW_UTTERANCE.test(text) || matchIntent(text) === "wait",
+    openMeta: opts?.openMeta,
+  });
+}
 
 app.post("/api/session/:id/signal", async (c) => {
   const session = sessions.get(c.req.param("id"));
@@ -1891,11 +2016,13 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 // unkeyed runs keep on-device recognition. Set by the providers fetch.
 let asrPrimary = false;
 
+const TTS_VOICE_LABELS = { 'seamless-v2': 'Seamless v2 voice', 'mms': 'local MMS voice', 'unknown': 'local voice' };
 fetch('/api/providers').then(r => r.json()).then(p => {
   asrPrimary = p.meta === true;
+  ttsLocal = p.tts === true;
   noteEl.textContent = 'Narration: ' + (p.meta ? 'Meta Model API' : p.openrouter ? 'OpenRouter' : 'local templates')
     + ' · Speech in: ' + (asrPrimary ? 'Muse Voice Transcribe' : SR ? 'browser recognition' : 'typed only')
-    + ' · Speech out: browser synthesis';
+    + ' · Speech out: ' + (ttsLocal ? (TTS_VOICE_LABELS[p.ttsVoice] || 'local voice') : 'browser synthesis');
 });
 
 fetch('/api/runs').then(r => r.json()).then(runs => {
@@ -1970,17 +2097,155 @@ voiceToggle.addEventListener('click', () => {
   voiceToggle.textContent = voiceOverride === null ? 'Voice: auto' : voiceOverride ? 'Voice: on' : 'Voice: off';
   voiceToggle.setAttribute('aria-pressed', String(voiceOverride === true));
 });
+// Sidecar voice when the server reports the local TTS up; browser
+// synthesis otherwise. Set by the providers fetch alongside asrPrimary.
+let ttsLocal = false;
+let ttsAudio = null;
+// Speech generation: bumped on every speak entry and every cut, so a
+// late /api/tts reply can never start audio over an interruption.
+let speakGen = 0;
+let speakAbort = null;
+// Barge-in grace: speechStart inside this window after playback starts
+// is our own echo, not the user. Timers bound the interrupted turn.
+const BARGE_GRACE_MS = 600;
+const BARGE_STEP_WAIT_MS = 3000;
+const BARGE_UTTERANCE_CAP_MS = 12000;
+let bargeArmedAt = 0;
+function stopTtsAudio() {
+  if (ttsAudio) {
+    try { ttsAudio.pause(); } catch { /* already stopped */ }
+    ttsAudio = null;
+  }
+}
+/**
+ * Speak one turn, listening for barge-in while it plays. Resolves false
+ * when the utterance played out (or never played) and the caller should
+ * continue the turn; resolves true when the turn was superseded — either
+ * the user barged in and the watch stream drove their interruption, or
+ * another turn took ownership — and the caller must return early.
+ */
 function speak(text) {
   return new Promise((resolve) => {
-    if (!window.speechSynthesis || !text) return resolve();
+    if (!text) return resolve(false);
     // SR arbitration: when a screen reader carries the live regions,
     // self-voicing stays silent unless the user forced it on.
     if (voiceOverride === false || (voiceOverride === null && srDetected === true)) {
-      return resolve();
+      return resolve(false);
     }
+    const gen = ++speakGen;
+    const vg = voiceGen;
+    const controller = new AbortController();
+    speakAbort = controller;
+    // Stale when another turn owns the run (typed answer, restart, fresh
+    // listen) or a newer utterance retired this one. Our own barge cut
+    // bumps speakGen too, so cutByUs exempts it: the watchdog resumes.
+    let cutByUs = false;
+    const stale = () => vg !== voiceGen || (!cutByUs && gen !== speakGen);
+    let barged = false;
+    let settled = false;
+    let watchTimer = null;
+    let ownWatch = false;
+    let watchSocket = null;
+    const finish = (abandon) => {
+      if (settled) return;
+      settled = true;
+      if (watchTimer) clearTimeout(watchTimer);
+      // Close only the stream we opened: a capture-owned or overlapping
+      // speak's stream must survive our finish.
+      if (ownWatch && watchSocket !== null && liveSocket === watchSocket) stopLiveAudio();
+      resolve(abandon);
+    };
+    // Barge-in watch: hot mic while this utterance plays (live-voice path
+    // only, and never against a stream another phase owns).
+    if (asrPrimary && sessionId && !micParked && liveSocket === null) {
+      ownWatch = true;
+      startLiveStream({
+        onPartial: (t) => {
+          if (settled || vg !== voiceGen) return;
+          // Pre-cut partials are our own echo in the recognizer: only the
+          // interruption shows on screen.
+          if (barged) listenEl.textContent = t ? 'Hearing: ' + t : 'Listening...';
+        },
+        onSpeechStart: () => {
+          if (settled) return;
+          if (vg !== voiceGen) return finish(true);
+          if (Date.now() < bargeArmedAt) return;
+          if (barged) return;
+          barged = true;
+          cutByUs = true;
+          stopVoicePlayback();
+          setOrb('listening');
+          listenEl.textContent = 'Listening...';
+          watchTimer = setTimeout(() => finish(stale()), BARGE_UTTERANCE_CAP_MS);
+        },
+        onSpeechEnd: () => {
+          if (settled || !barged) return;
+          // The interruption ended: its step must land promptly, else the
+          // cut was a cough and the stale turn resumes.
+          if (watchTimer) clearTimeout(watchTimer);
+          watchTimer = setTimeout(() => finish(stale()), BARGE_STEP_WAIT_MS);
+        },
+        onStep: (step) => {
+          if (settled) return;
+          if (vg !== voiceGen) return finish(true);
+          finish(true);
+          drive(step);
+        },
+        onError: () => {
+          if (settled) return;
+          // Stream lost mid-interruption: resume or abandon like the
+          // watchdog. Lost before any speech: proceed deaf, playback on.
+          if (barged) finish(stale());
+          else ownWatch = false;
+        },
+      }).then((ok) => { if (!ok && !settled && !barged) ownWatch = false; });
+      watchSocket = liveSocket;
+    }
+    const onPlaybackStart = () => { bargeArmedAt = Date.now() + BARGE_GRACE_MS; };
+    const play = ttsLocal
+      ? speakSidecar(text, gen, controller.signal, onPlaybackStart)
+      : speakSynth(text, gen, onPlaybackStart);
+    play.then(() => { if (!barged) finish(stale()); });
+  });
+}
+/** One turn through the local sidecar voice, falling back to synthesis on any miss. */
+function speakSidecar(text, gen, signal, onStart) {
+  return new Promise((resolve) => {
     setOrb('speaking');
     let done = false;
-    const finish = () => { if (!done) { done = true; setOrb('idle'); resolve(); } };
+    // A cut utterance resolves without touching the orb: the barged turn
+    // owns the listening state now.
+    const finish = () => { if (!done) { done = true; stopTtsAudio(); if (gen === speakGen) setOrb('idle'); resolve(); } };
+    // Cut mid-flight: resolve silent, never synth over the interruption.
+    const finishSilent = () => { if (!done) { done = true; resolve(); } };
+    const fallback = () => { if (!done) speakSynth(text, gen, onStart).then(finish); };
+    post('/api/tts', { text }, signal).then((res) => {
+      if (gen !== speakGen) return finishSilent();
+      const url = typeof res.audio === 'string' ? res.audio : '';
+      if (!url) return fallback();
+      const audio = new Audio(url);
+      ttsAudio = audio;
+      audio.onended = finish;
+      audio.onerror = () => fallback();
+      try {
+        const played = audio.play();
+        onStart();
+        if (played && played.catch) played.catch(() => fallback());
+      } catch { fallback(); }
+    }).catch(() => {
+      if (gen !== speakGen || (signal && signal.aborted)) return finishSilent();
+      fallback();
+    });
+    // A stuck fetch or silent file never wedges the run.
+    setTimeout(finish, Math.min(15000, 3000 + text.length * 60));
+  });
+}
+function speakSynth(text, gen, onStart) {
+  return new Promise((resolve) => {
+    if (!window.speechSynthesis) return resolve();
+    setOrb('speaking');
+    let done = false;
+    const finish = () => { if (!done) { done = true; if (gen === speakGen) setOrb('idle'); resolve(); } };
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.0;
     u.pitch = 1.1;
@@ -1992,6 +2257,7 @@ function speak(text) {
     u.onend = finish;
     u.onerror = finish;
     speechSynthesis.speak(u);
+    if (onStart) onStart();
     // Some engines never fire onend (headless, or a voice that failed to load).
     // Without this the whole run would stop dead on a silent sentence.
     setTimeout(finish, Math.min(9000, 1500 + text.length * 60));
@@ -2470,10 +2736,10 @@ standinBtn.addEventListener('click', async () => {
     renderPanel(res.panel, res.text);
     focusConfirmHeading();
     setSpoken(pendingVerdict, false);
-    await speak(pendingVerdict);
+    if (await speak(pendingVerdict)) return;   // barged: the watch owns the turn
     if (sessionId !== standinSession) return;   // restart won the race: drop it
     setSpoken(res.text, false);
-    await announceLock(res.text);
+    if (await announceLock(res.text)) return;
   } catch (err) {
     standinBtn.hidden = false;
     listenEl.textContent = postError(err);
@@ -2551,10 +2817,10 @@ async function onLocked(res, lockSession) {
   renderPanel(res.panel, res.text);
   focusConfirmHeading();
   setSpoken(pendingVerdict, false);
-  await speak(pendingVerdict);
+  if (await speak(pendingVerdict)) return;   // barged: the watch owns the turn
   if (sessionId !== lockSession) return;   // restart won the race: drop it
   setSpoken(res.text, false);
-  await announceLock(res.text);
+  if (await announceLock(res.text)) return;
 }
 
 /**
@@ -2618,7 +2884,7 @@ function flashLock() {
 /** Every lock is announced: guide flash + haptic + spoken confirm. */
 async function announceLock(text) {
   flashLock();
-  await speak(text);
+  return speak(text);
 }
 
 /** Focus the confirm-card heading on appearance (it is tabindex=-1). */
@@ -2869,6 +3135,7 @@ async function sampleTick() {
       // running, so a backed-up coaching utterance must not eat the lead
       // time. Safe — speak() resolves idempotently on interrupt.
       if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch { /* already clear */ } }
+      stopTtsAudio();
       await speak(BEAT_TWIN);
       return;
     }
@@ -2933,7 +3200,7 @@ async function drive(step) {
   // A near-miss resolution echoes before the resolved turn sounds.
   if (step.echo) {
     setSpoken(step.echo, false);
-    await speak(step.echo);
+    if (await speak(step.echo)) return;   // barged: the watch owns the turn
   }
   stageEl.textContent = step.stage;
   if (voiceLock !== true) setSpoken(step.text, step.stage === 'decided');
@@ -2942,11 +3209,11 @@ async function drive(step) {
   if (voiceLock === true) {
     focusConfirmHeading();
     setSpoken(pendingVerdict, false);
-    await speak(pendingVerdict);
+    if (await speak(pendingVerdict)) return;   // barged: the watch owns the turn
     setSpoken(step.text, false);
-    await announceLock(step.text);
+    if (await announceLock(step.text)) return;
   } else {
-    await speak(step.narration.text);
+    if (await speak(step.narration.text)) return;
   }
 
   if (step.report) {
@@ -3009,10 +3276,35 @@ function startCaptureListener() {
   if (micParked || sampling !== true) return;
   if (captureStage === null || !CAPTURE_SIGNAL[captureStage]) return;
   if (pendingRef !== null) return;
-  if (captureRec !== null || captureAsrBusy) return;
-  if (asrPrimary && sessionId) return captureTranscribe();
+  if (captureRec !== null || captureAsrBusy || liveSocket !== null) return;
+  if (asrPrimary && sessionId) return captureLive();
   if (!SR) return;
   captureSpeech();
+}
+
+/** Live command window: relay hears lock/wait, chatter swallowed server-side. */
+async function captureLive() {
+  if (liveSocket !== null) return;
+  const liveStage = captureStage;
+  const fallDown = () => {
+    stopLiveAudio();
+    if (SR) captureSpeech();
+    else restartCaptureListener();
+  };
+  const ok = await startLiveStream({
+    mode: 'commands',
+    onPartial: () => {},   // capture stays quiet: coaching already talks
+    onSpeechStart: () => { if (captureStage === liveStage) stopVoicePlayback(); },
+    onStep: (step) => {
+      if (captureStage !== liveStage || sampling !== true) return;
+      if (pendingRef !== null) return;
+      stopLiveAudio();
+      listenerErrors = 0;
+      drive(step);
+    },
+    onError: () => { if (captureStage === liveStage) fallDown(); },
+  });
+  if (!ok && captureStage === liveStage) fallDown();
 }
 
 let captureAsrBusy = false;
@@ -3091,6 +3383,7 @@ function stopCaptureListener() {
     captureRec = null;
   }
   stopRecording();
+  stopLiveAudio();
 }
 
 /** Veto disarm: drop the fire clock and resume the command listener. */
@@ -3224,12 +3517,176 @@ async function transcribeUtterance() {
   } catch { return null; }
 }
 
-// Speech-in router: Transcribe-first when keyed (primary ASR, spec §5),
-// on-device recognition otherwise. Transcribe misses fall down the same
-// ladder: recognition, then typed.
+// Realtime speech-in: mic PCM streams to the app relay, partials stream
+// back, served turns drive the run. First rung when keyed; misses fall
+// down the same ladder: file transcribe, recognition, then typed.
+const ASR_LIVE_RATE = 24000;
+const ASR_LIVE_FRAME = 1920;   // 80 ms of 16-bit mono PCM @ 24 kHz
+let liveSocket = null;
+let liveAudio = null;
+function stopLiveAudio() {
+  const l = liveAudio;
+  liveAudio = null;
+  if (liveSocket) {
+    try { liveSocket.close(); } catch { /* already gone */ }
+    liveSocket = null;
+  }
+  if (!l) return;
+  try { l.node.disconnect(); } catch { /* already gone */ }
+  try { l.source.disconnect(); } catch { /* already gone */ }
+  try { l.ctx.close(); } catch { /* already gone */ }
+  try { for (const t of l.stream.getTracks()) t.stop(); } catch { /* already stopped */ }
+}
+// AudioWorklet source (single quotes only: this file is a template literal).
+const LIVE_WORKLET = [
+  'let stash = [];',
+  "registerProcessor('idv-pcm', class extends AudioWorkletProcessor {",
+  '  process(inputs) {',
+  '    const ch = (inputs[0] && inputs[0][0]) || null;',
+  '    if (!ch) return true;',
+  '    const step = sampleRate / 24000;',
+  '    let pos = 0;',
+  '    const out = [];',
+  '    while (pos < ch.length) {',
+  '      const s = Math.max(-1, Math.min(1, ch[Math.floor(pos)]));',
+  '      out.push(s < 0 ? s * 0x8000 : s * 0x7FFF);',
+  '      pos += step;',
+  '    }',
+  '    stash = stash.concat(out);',
+  '    while (stash.length >= 1920) {',
+  '      const frame = new Int16Array(stash.slice(0, 1920));',
+  '      stash = stash.slice(1920);',
+  '      this.port.postMessage(frame.buffer, [frame.buffer]);',
+  '    }',
+  '    return true;',
+  '  }',
+  '});',
+  ''
+].join('\\n');
+
+/**
+ * Open one live turn: socket + mic + worklet. Resolves true once audio
+ * flows, false on any setup failure. Served steps, captions, and
+ * barge-in cues arrive via opts; the socket stays open until the caller
+ * stops it or the server closes.
+ */
+async function startLiveStream(opts) {
+  stopLiveAudio();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(proto + '//' + location.host + '/api/session/' + sessionId + '/asr-live');
+  liveSocket = socket;
+  const opened = await new Promise((resolve) => {
+    socket.onopen = () => resolve(true);
+    socket.onerror = () => resolve(false);
+    setTimeout(() => resolve(false), 5000);
+  });
+  if (!opened || liveSocket !== socket) { stopLiveAudio(); return false; }
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch { stopLiveAudio(); return false; }
+  const ctx = new Ctx();
+  if (!ctx.audioWorklet) { stopLiveAudio(); return false; }
+  const blobUrl = URL.createObjectURL(new Blob([LIVE_WORKLET], { type: 'application/javascript' }));
+  try {
+    await ctx.audioWorklet.addModule(blobUrl);
+  } catch { stopLiveAudio(); return false; }
+  finally { URL.revokeObjectURL(blobUrl); }
+  const source = ctx.createMediaStreamSource(stream);
+  const node = new AudioWorkletNode(ctx, 'idv-pcm');
+  node.port.onmessage = (e) => {
+    if (liveSocket === socket && socket.readyState === 1 && e.data) {
+      try { socket.send(e.data); } catch { /* closing */ }
+    }
+  };
+  source.connect(node);
+  liveAudio = { ctx, stream, source, node };
+  if (opts.mode) {
+    try { socket.send(JSON.stringify({ type: 'mode', mode: opts.mode })); } catch { /* closing */ }
+  }
+  socket.onmessage = (event) => {
+    let msg = null;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.kind === 'partial') opts.onPartial(typeof msg.text === 'string' ? msg.text : '');
+    else if (msg.kind === 'speechStart') opts.onSpeechStart();
+    else if (msg.kind === 'speechEnd' && opts.onSpeechEnd) opts.onSpeechEnd();
+    else if (msg.kind === 'step' && msg.step) opts.onStep(msg.step);
+    else if (msg.kind === 'error') opts.onError(msg.message);
+  };
+  const gone = () => { if (liveSocket === socket) { liveSocket = null; opts.onError('closed'); } };
+  socket.onclose = gone;
+  socket.onerror = gone;
+  return true;
+}
+
+/** Stop any voice playback for barge-in, retiring its generation and fetch. */
+function stopVoicePlayback() {
+  speakGen += 1;
+  if (speakAbort) {
+    try { speakAbort.abort(); } catch { /* already gone */ }
+    speakAbort = null;
+  }
+  stopTtsAudio();
+  if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch { /* already clear */ } }
+}
+
+// Speech-in router: realtime relay first when keyed, then file
+// transcribe, on-device recognition, and typed — same ladder every path.
 function listen() {
-  if (asrPrimary && !micParked && sessionId) return listenTranscribe();
+  if (asrPrimary && !micParked && sessionId) return listenLive();
   return listenSpeech();
+}
+
+async function listenLive() {
+  inputEl.focus({ preventScroll: true });
+  voiceGen += 1;
+  const gen = voiceGen;
+  stopRecording();
+  if (activeRecognition) {
+    try { activeRecognition.abort(); } catch { /* already gone */ }
+    activeRecognition = null;
+  }
+  listenEl.textContent = 'Listening...';
+  setOrb('listening');
+  let stepped = false;
+  let quietTimer = null;
+  const disarmQuiet = () => { if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; } };
+  const armQuiet = () => {
+    disarmQuiet();
+    quietTimer = setTimeout(() => {
+      if (gen === voiceGen && !stepped) { stopLiveAudio(); listenTranscribe(); }
+    }, 15000);
+  };
+  const ok = await startLiveStream({
+    onPartial: (text) => {
+      if (gen !== voiceGen) return;
+      listenEl.textContent = text ? 'Hearing: ' + text : 'Listening...';
+      if (text) armQuiet();   // speech in progress extends the window
+    },
+    onSpeechStart: () => { if (gen === voiceGen) stopVoicePlayback(); },
+    onStep: (step) => {
+      if (gen !== voiceGen) return;
+      stepped = true;
+      disarmQuiet();
+      stopLiveAudio();
+      setOrb('idle');
+      listenEl.textContent = '';
+      silentStreak = 0;
+      drive(step);
+    },
+    onError: () => {
+      if (gen !== voiceGen) return;
+      disarmQuiet();
+      stopLiveAudio();
+      listenTranscribe();
+    },
+  });
+  if (gen !== voiceGen || stepped) { disarmQuiet(); return; }
+  if (!ok) { stopLiveAudio(); listenTranscribe(); return; }
+  armQuiet();   // a quiet window gives way to file transcribe
 }
 
 async function listenTranscribe() {
@@ -3237,6 +3694,7 @@ async function listenTranscribe() {
   voiceGen += 1;
   const gen = voiceGen;
   stopRecording();
+  stopLiveAudio();
   if (activeRecognition) {
     try { activeRecognition.abort(); } catch { /* already gone */ }
     activeRecognition = null;
@@ -3259,6 +3717,7 @@ async function listenTranscribe() {
 }
 
 function listenSpeech() {
+  stopLiveAudio();
   inputEl.focus({ preventScroll: true });
   if (!SR || micParked) {
     listenEl.textContent = micParked
@@ -3361,6 +3820,9 @@ async function respond(utterance) {
   // A command dropped on busy restarts the capture listener (a no-op off
   // capture stages): the voice veto must survive the round-trip overlap.
   if (busy) { startCaptureListener(); return; }
+  // A fresh turn retires live listeners and barge watches: their late
+  // steps must not double-drive behind this utterance.
+  voiceGen += 1;
   busy = true;
   inputEl.value = '';
   // A wait/lock utterance vetoes the arm the moment it goes out — the fire
@@ -3410,6 +3872,7 @@ startBtn.addEventListener('click', async () => {
     activeRecognition = null;
   }
   stopRecording();
+  stopLiveAudio();
   micParked = null;
   silenceParked = false;
   silentStreak = 0;

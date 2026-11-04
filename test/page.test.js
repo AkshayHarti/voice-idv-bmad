@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Script } from "node:vm";
 import app, { LOCK_NOW_UTTERANCE } from "../dist/index.js";
 import { AUTO_CAPTURE_BEAT, matchIntent } from "../dist/flow.js";
 
@@ -301,6 +302,77 @@ test("speech-in is Transcribe-first when keyed, recognition then typed otherwise
   );
 });
 
+test("speech-out prefers the local sidecar voice with synthesis fallback", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("ttsLocal"), "keyed flag routes speech output");
+  assert.ok(html.includes("TTS_VOICE_LABELS"), "note line maps the ttsVoice id");
+  assert.ok(html.includes("Seamless v2 voice"), "Seamless label present");
+  assert.ok(html.includes("local MMS voice"), "MMS label kept for the MMS sidecar");
+  assert.ok(html.includes("function speakSidecar"), "sidecar playback path");
+  assert.ok(html.includes("function speakSynth"), "synthesis path kept as fallback");
+  assert.ok(html.includes("stopTtsAudio"), "barge-in and interrupts stop playback");
+  assert.ok(html.includes("'/api/tts'"), "turns post to the TTS endpoint");
+  const mmsFn = html.indexOf("function speakSidecar");
+  assert.ok(
+    html.indexOf("speakSynth(text, gen, onStart)", mmsFn) !== -1 &&
+    html.indexOf("speakSynth(text, gen, onStart)", mmsFn) < html.indexOf("function speakSynth"),
+    "MMS misses fall back to synthesis for the same sentence",
+  );
+});
+
+test("barge-in: hot mic during playback cuts on speech, drives the step", async () => {
+  const html = await getPage();
+  const speakFn = html.indexOf("function speak(text)");
+  assert.ok(speakFn !== -1, "speak choke point exists");
+  const speakSidecarFn = html.indexOf("function speakSidecar");
+  const speakBlock = html.slice(speakFn, speakSidecarFn);
+  assert.ok(speakBlock.includes("startLiveStream"), "speak opens a barge watch stream");
+  assert.ok(speakBlock.includes("liveSocket === null"), "watch never fights an owned stream");
+  assert.ok(speakBlock.includes("BARGE_GRACE_MS"), "self-echo grace window");
+  assert.ok(speakBlock.includes("bargeArmedAt"), "grace arms at playback start");
+  assert.ok(speakBlock.includes("stopVoicePlayback"), "armed speechStart cuts playback");
+  assert.ok(speakBlock.includes("drive(step)"), "interruption step drives the turn");
+  assert.ok(speakBlock.includes("BARGE_STEP_WAIT_MS"), "cough without a step resumes");
+  assert.ok(html.includes("speakAbort.abort()"), "cut aborts the in-flight TTS fetch");
+  assert.ok(html.includes("finishSilent"), "late TTS resolves silent, never plays over the user");
+  assert.ok(html.includes("speakGen += 1"), "cuts retire the speech generation");
+});
+
+test("barge-in: superseded turns return early, fresh turns retire watchers", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("if (await speak(step.echo)) return"), "echo barge abandons the turn");
+  assert.ok(
+    html.includes("if (await speak(step.narration.text)) return"),
+    "narration barge skips the stale continuation",
+  );
+  assert.ok(html.includes("return speak(text)"), "announceLock propagates the barged flag");
+  assert.ok(
+    html.includes("if (await announceLock(step.text)) return"),
+    "verdict-path barge skips the lock announce",
+  );
+  const respondFn = html.indexOf("async function respond(utterance)");
+  const nextFn = html.indexOf("async function", respondFn + 1);
+  const respondBlock = html.slice(respondFn, nextFn);
+  assert.ok(
+    respondBlock.includes("voiceGen += 1"),
+    "fresh turns retire live listeners and barge watches",
+  );
+});
+
+test("speech-in routes the realtime relay first with commands mode", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("asr-live"), "relay upgrade path");
+  assert.ok(html.includes("AudioWorklet"), "mic PCM worklet");
+  assert.ok(html.includes("idv-pcm"), "worklet processor name");
+  assert.ok(html.includes("function listenLive"), "live turn listener");
+  assert.ok(html.includes("function captureLive"), "live command listener");
+  assert.ok(html.includes("startLiveStream"), "shared stream setup");
+  assert.ok(html.includes("stopLiveAudio"), "retire paths release mic + socket");
+  assert.ok(html.includes("stopVoicePlayback"), "barge-in stops playback");
+  assert.ok(html.includes("'commands'"), "capture selects commands mode");
+  assert.ok(html.includes("Hearing: "), "partials caption the turn");
+});
+
 test("near-miss echo sounds before the resolved turn", async () => {
   const html = await getPage();
   assert.ok(html.includes("step.echo"), "echo carried on the step");
@@ -343,4 +415,17 @@ test("captured preview replaces the live frame until keep/retake resolves", asyn
     "retake unhides the frame before guides redraw"
   );
   assert.ok(html.includes("drawGuides(stage, false)"), "resumed capture redraws guidance guides");
+});
+
+test("served client module parses: template-literal escapes must survive", async () => {
+  // A single backslash inside the PAGE template literal is consumed by
+  // TypeScript (e.g. '\n' becomes a real newline), shipping a script that
+  // kills the whole module: dead buttons, no fixtures, no narration.
+  const html = await getPage();
+  const match = html.match(/<script type="module">([\s\S]*)<\/script>/);
+  assert.ok(match, "inline client module present");
+  assert.doesNotThrow(
+    () => new Script(match[1], { filename: "client.mjs" }),
+    "served client script must parse"
+  );
 });

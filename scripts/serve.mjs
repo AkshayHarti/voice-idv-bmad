@@ -1,5 +1,6 @@
-// Zero-dependency local server. Cloudflare Workers is the real target;
-// this exists so the demo runs on a laptop with no install beyond the repo.
+// Local demo server: plain node:http plus the `ws` package for the
+// realtime voice relay upgrade below. Cloudflare Workers is the real
+// target; this exists so the demo runs on a laptop with `npm install`.
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,7 +25,7 @@ try {
 } catch {
   // No .env — plain environment only.
 }
-import app from "../dist/index.js";
+import app, { attachAsrLive } from "../dist/index.js";
 
 const port = Number(process.env.PORT ?? 8787);
 
@@ -41,6 +42,29 @@ const server = createServer(async (req, res) => {
   const response = await app.fetch(request);
   res.writeHead(response.status, Object.fromEntries(response.headers));
   res.end(Buffer.from(await response.arrayBuffer()));
+});
+
+// Realtime speech-in: ws(s)://host/api/session/:id/asr-live upgrades here
+// (Hono never sees upgrades) and bridges to Meta via attachAsrLive. The
+// `ws` import is lazy so plain HTTP still boots without it installed.
+let relayWss = null;
+server.on("upgrade", async (req, socket, head) => {
+  const m = (req.url || "").match(/^\/api\/session\/([^/]+)\/asr-live$/);
+  if (!m) {
+    socket.destroy();
+    return;
+  }
+  try {
+    if (!relayWss) {
+      const { WebSocketServer } = await import("ws");
+      relayWss = new WebSocketServer({ noServer: true });
+    }
+    relayWss.handleUpgrade(req, socket, head, (browser) => {
+      attachAsrLive(browser, decodeURIComponent(m[1]));
+    });
+  } catch {
+    socket.destroy(); // relay unavailable: HTTP paths unaffected
+  }
 });
 
 server.listen(port, () => {
