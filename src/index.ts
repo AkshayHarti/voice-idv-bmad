@@ -588,7 +588,63 @@ app.get("/api/run/:id", async (c) => {
   return c.json(evaluateFixture(id));
 });
 
-app.get("/api/providers", (c) => c.json(configuredProviders(processEnv())));
+app.get("/api/providers", async (c) =>
+  c.json({ ...configuredProviders(processEnv()), tts: await mmsUp(processEnv()) }),
+);
+
+/** Local MMS voice reachability for the speech-out flag (short fuse, never throws). */
+async function mmsUp(env: Record<string, string | undefined>): Promise<boolean> {
+  try {
+    const res = await fetch(`${env.VOICE_TTS_URL ?? "http://127.0.0.1:8765"}/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Raw bytes to base64 without Buffer (Workers-safe, chunked for the stack). */
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 8192) {
+    bin += String.fromCharCode(...Array.from(bytes.subarray(i, i + 8192)));
+  }
+  return btoa(bin);
+}
+
+/**
+ * Speech-out for one turn: text in, WAV data URL out, via the local Meta
+ * MMS server. Never a 4xx for synthesis itself — outage/empty read as
+ * audio: null so the client falls back to browser synthesis.
+ */
+app.post("/api/tts", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { text?: unknown };
+  const text = typeof body.text === "string" ? body.text.trim().slice(0, 500) : "";
+  if (!text) {
+    return c.json({ audio: null, provider: "local", skipped: ["local: empty text (nothing to speak)"] });
+  }
+  try {
+    const base = processEnv().VOICE_TTS_URL ?? "http://127.0.0.1:8765";
+    const res = await fetch(`${base}/speak`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const kind = res.headers.get("content-type") ?? "";
+    if (!res.ok || !kind.includes("audio/")) throw new Error(`tts ${res.status}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length < 1000) throw new Error("tts returned no audio");
+    return c.json({
+      audio: "data:audio/wav;base64," + bytesToBase64(bytes),
+      provider: "mms-local",
+      skipped: [],
+    });
+  } catch (error) {
+    return c.json({ audio: null, provider: "local", skipped: [`local: ${(error as Error).message}`] });
+  }
+});
 
 /** Standard step body: Turn payload plus its generated panel. */
 async function stepBody(
@@ -1893,9 +1949,10 @@ let asrPrimary = false;
 
 fetch('/api/providers').then(r => r.json()).then(p => {
   asrPrimary = p.meta === true;
+  ttsMms = p.tts === true;
   noteEl.textContent = 'Narration: ' + (p.meta ? 'Meta Model API' : p.openrouter ? 'OpenRouter' : 'local templates')
     + ' · Speech in: ' + (asrPrimary ? 'Muse Voice Transcribe' : SR ? 'browser recognition' : 'typed only')
-    + ' · Speech out: browser synthesis';
+    + ' · Speech out: ' + (ttsMms ? 'local MMS voice' : 'browser synthesis');
 });
 
 fetch('/api/runs').then(r => r.json()).then(runs => {
@@ -1970,14 +2027,54 @@ voiceToggle.addEventListener('click', () => {
   voiceToggle.textContent = voiceOverride === null ? 'Voice: auto' : voiceOverride ? 'Voice: on' : 'Voice: off';
   voiceToggle.setAttribute('aria-pressed', String(voiceOverride === true));
 });
+// MMS voice when the server reports the local TTS up; browser synthesis
+// otherwise. Set by the providers fetch alongside asrPrimary.
+let ttsMms = false;
+let ttsAudio = null;
+function stopTtsAudio() {
+  if (ttsAudio) {
+    try { ttsAudio.pause(); } catch { /* already stopped */ }
+    ttsAudio = null;
+  }
+}
 function speak(text) {
   return new Promise((resolve) => {
-    if (!window.speechSynthesis || !text) return resolve();
+    if (!text) return resolve();
     // SR arbitration: when a screen reader carries the live regions,
     // self-voicing stays silent unless the user forced it on.
     if (voiceOverride === false || (voiceOverride === null && srDetected === true)) {
       return resolve();
     }
+    if (ttsMms) return resolve(speakMms(text));
+    resolve(speakSynth(text));
+  });
+}
+/** One turn through the local MMS voice, falling back to synthesis on any miss. */
+function speakMms(text) {
+  return new Promise((resolve) => {
+    setOrb('speaking');
+    let done = false;
+    const finish = () => { if (!done) { done = true; stopTtsAudio(); setOrb('idle'); resolve(); } };
+    const fallback = () => { if (!done) speakSynth(text).then(finish); };
+    post('/api/tts', { text }).then((res) => {
+      const url = typeof res.audio === 'string' ? res.audio : '';
+      if (!url) return fallback();
+      const audio = new Audio(url);
+      ttsAudio = audio;
+      audio.onended = finish;
+      audio.onerror = () => fallback();
+      try {
+        const played = audio.play();
+        if (played && played.catch) played.catch(() => fallback());
+      } catch { fallback(); }
+    }).catch(() => fallback());
+    // A stuck fetch or silent file never wedges the run.
+    setTimeout(finish, Math.min(15000, 3000 + text.length * 60));
+  });
+}
+function speakSynth(text) {
+  return new Promise((resolve) => {
+    if (!window.speechSynthesis) return resolve();
     setOrb('speaking');
     let done = false;
     const finish = () => { if (!done) { done = true; setOrb('idle'); resolve(); } };
@@ -2869,6 +2966,7 @@ async function sampleTick() {
       // running, so a backed-up coaching utterance must not eat the lead
       // time. Safe — speak() resolves idempotently on interrupt.
       if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch { /* already clear */ } }
+      stopTtsAudio();
       await speak(BEAT_TWIN);
       return;
     }

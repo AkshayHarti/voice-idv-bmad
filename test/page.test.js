@@ -301,6 +301,22 @@ test("speech-in is Transcribe-first when keyed, recognition then typed otherwise
   );
 });
 
+test("speech-out prefers the local MMS voice with synthesis fallback", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("ttsMms"), "keyed flag routes speech output");
+  assert.ok(html.includes("local MMS voice"), "note line names the MMS voice");
+  assert.ok(html.includes("function speakMms"), "MMS playback path");
+  assert.ok(html.includes("function speakSynth"), "synthesis path kept as fallback");
+  assert.ok(html.includes("stopTtsAudio"), "barge-in and interrupts stop playback");
+  assert.ok(html.includes("'/api/tts'"), "turns post to the TTS endpoint");
+  const mmsFn = html.indexOf("function speakMms");
+  assert.ok(
+    html.indexOf("speakSynth(text)", mmsFn) !== -1 &&
+    html.indexOf("speakSynth(text)", mmsFn) < html.indexOf("function speakSynth"),
+    "MMS misses fall back to synthesis for the same sentence",
+  );
+});
+
 test("near-miss echo sounds before the resolved turn", async () => {
   const html = await getPage();
   assert.ok(html.includes("step.echo"), "echo carried on the step");
