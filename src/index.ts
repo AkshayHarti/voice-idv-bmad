@@ -1665,7 +1665,7 @@ const PAGE = `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Aria — AU Voice IDV demo</title>
+<title>Aria — Voice onboarding agent</title>
 <style>
   :root { color-scheme: dark;
           --base:#0B0E13; --raised:#12161D; --overlay:#1A2130;
@@ -1767,14 +1767,13 @@ const PAGE = `<!doctype html>
   }
 </style>
 
-<h1>Aria — AU Voice IDV demo</h1>
-<p class="sub">Voice-guided capture with Aria. Deterministic checks decide; voice narrates, never decides.</p>
+<h1>Aria — Voice onboarding agent</h1>
+<p class="sub">Aria — Voice onboarding agent</p>
 
 <div id="progressDock"></div>
 
-<div class="row" id="fixtures" role="group" aria-label="Choose a fixture"></div>
 <div class="row">
-  <button class="primary" id="start" disabled>Start run</button>
+  <button class="primary" id="retry" hidden>Retry</button>
   <button id="voiceToggle" aria-pressed="false" title="Self-voicing: auto follows screen-reader detection">Voice: auto</button>
   <span id="stage">idle</span>
 </div>
@@ -1816,10 +1815,10 @@ const PAGE = `<!doctype html>
 
 <script type="module">
 const $ = (id) => document.getElementById(id);
-const fixturesEl = $('fixtures'), transcriptEl = $('transcript'), stageEl = $('stage');
+const transcriptEl = $('transcript'), stageEl = $('stage');
 const listenEl = $('listen'), decisionEl = $('decision');
 const linkEl = $('customerLink');
-const noteEl = $('note'), startBtn = $('start'), inputEl = $('utterance');
+const noteEl = $('note'), retryBtn = $('retry'), inputEl = $('utterance');
 const orbEl = $('orb'), spokenEl = $('spoken'), panelEl = $('panel');
 const progressDock = $('progressDock');
 const captureWrap = $('captureWrap'), captureFrame = $('captureFrame');
@@ -1877,13 +1876,15 @@ const GENERIC_VERDICT = {
   awaiting_selfie: 'Selfie captured.',
 };
 
-let fixtureId = null;
+// Fixed cold-open fixture (equals the server default RUN_IDS[0]): the run
+// auto-starts on page load with no picker and no gate.
+const fixtureId = 'vic-dl-clean';
 let sessionId = null;
 let busy = false;
 let micParked = null;
 let silentStreak = 0;
 // Shared recovery tail for all three parked-mic remedies.
-const START_RETRY_SUFFIX = ', then press Start to try voice again.';
+const START_RETRY_SUFFIX = ', then press Retry to try voice again.';
 let activeRecognition = null;
 let voiceGen = 0;
 let silenceParked = false;
@@ -1954,21 +1955,6 @@ fetch('/api/providers').then(r => r.json()).then(p => {
   noteEl.textContent = 'Narration: ' + (p.meta ? 'Meta Model API' : p.openrouter ? 'OpenRouter' : 'local templates')
     + ' · Speech in: ' + (asrPrimary ? 'Muse Voice Transcribe' : SR ? 'browser recognition' : 'typed only')
     + ' · Speech out: ' + (ttsMms ? 'local MMS voice' : 'browser synthesis');
-});
-
-fetch('/api/runs').then(r => r.json()).then(runs => {
-  for (const run of runs) {
-    const b = document.createElement('button');
-    b.textContent = run.id;
-    b.title = run.kind;
-    b.setAttribute('aria-pressed', 'false');
-    b.addEventListener('click', () => {
-      fixtureId = run.id;
-      for (const other of fixturesEl.children) other.setAttribute('aria-pressed', String(other === b));
-      startBtn.disabled = false;
-    });
-    fixturesEl.append(b);
-  }
 });
 
 function renderTranscript(lines) {
@@ -2112,12 +2098,12 @@ async function post(path, body, signal) {
 }
 
 /**
- * One honest message per failure kind: an expired session needs Start,
+ * One honest message per failure kind: an expired session needs Retry,
  * anything else is the network.
  */
 function postError(err) {
   return err && err.status === 404
-    ? 'Session expired — press Start to begin again.'
+    ? 'Session expired — press Retry to begin again.'
     : 'Could not reach the server.';
 }
 
@@ -2355,6 +2341,10 @@ async function doKeep() {
   } catch (err) {
     busy = false;
     listenEl.textContent = postError(err);
+    if (err && err.status === 404) {
+      retryBtn.hidden = false;
+      retryBtn.disabled = false;
+    }
   }
 }
 
@@ -2374,6 +2364,10 @@ async function doRetake() {
   } catch (err) {
     busy = false;
     listenEl.textContent = postError(err);
+    if (err && err.status === 404) {
+      retryBtn.hidden = false;
+      retryBtn.disabled = false;
+    }
   }
 }
 /**
@@ -2576,6 +2570,10 @@ standinBtn.addEventListener('click', async () => {
   } catch (err) {
     standinBtn.hidden = false;
     listenEl.textContent = postError(err);
+    if (err && err.status === 404) {
+      retryBtn.hidden = false;
+      retryBtn.disabled = false;
+    }
   } finally {
     standinBusy = false;
   }
@@ -2606,10 +2604,15 @@ async function doLock() {
     // may have moved on, in which case the listener restart below no-ops.
     disarmToCoaching();
     // Wrong-stage (stale in-flight lock) and expired-session locks stay
-    // disabled instead of inviting another failing tap — Start is the only
+    // disabled instead of inviting another failing tap — Retry is the only
     // path back. Other failures re-enable for a retry.
     if (err && (err.status === 409 || err.status === 404)) {
       lockBtn.disabled = true;
+      if (err.status === 404) {
+        listenEl.textContent = postError(err);
+        retryBtn.hidden = false;
+        retryBtn.disabled = false;
+      }
     } else if (err && err.name === 'AbortError') {
       lockBtn.disabled = pendingRef !== null;
       listenEl.textContent = 'Still working — tap Lock to collect.';
@@ -2748,6 +2751,10 @@ async function doConfirm() {
   } catch (err) {
     busy = false;
     listenEl.textContent = postError(err);
+    if (err && err.status === 404) {
+      retryBtn.hidden = false;
+      retryBtn.disabled = false;
+    }
   }
 }
 
@@ -2756,7 +2763,7 @@ function retireCard() {
   dropConfirmCard();
   cardOpen = false;
   // Retire any pair-listen still running — its late result must never
-  // answer a closed pair (Start retires turn listeners the same way).
+  // answer a closed pair (Retry retires turn listeners the same way).
   voiceGen += 1;
   if (activeRecognition) {
     try { activeRecognition.abort(); } catch { /* already gone */ }
@@ -3011,11 +3018,13 @@ async function drive(step) {
   // Never render a malformed step: bail with recovery guidance instead of
   // throwing halfway through and leaving a stuck run.
   if (!step || typeof step !== 'object' || typeof step.stage !== 'string') {
-    listenEl.textContent = 'Something went wrong — press Start to begin again.';
+    listenEl.textContent = 'Something went wrong — press Retry to begin again.';
+    retryBtn.hidden = false;
+    retryBtn.disabled = false;
     return;
   }
   // Retained snapshots live for the review gate only: a decided or purged
-  // run drops them (a fresh Start clears them too).
+  // run drops them (a fresh run clears them too).
   if (step.report || step.stage === 'decided' || step.stage === 'idle') clearSnapshots();
   // A fresh lock via the "lock now" voice path lands on the same confirm
   // card as a tap: snapshot first, then verdict, then the question.
@@ -3091,6 +3100,10 @@ async function drive(step) {
       return drive(await post('/api/session/' + sessionId + '/signal', { event: READING_SIGNAL[step.stage] }));
     } catch (err) {
       listenEl.textContent = postError(err);
+      if (err && err.status === 404) {
+        retryBtn.hidden = false;
+        retryBtn.disabled = false;
+      }
       return;
     }
   }
@@ -3436,7 +3449,7 @@ function listenSpeech() {
   activeRecognition = recognition;
 
   // Shared turn teardown: each path below ends the turn at most once, and a
-  // turn from a previous Start never speaks into the new session.
+  // turn from a previous run never speaks into the new session.
   const abandon = () => {
     if (settled || gen !== voiceGen) return false;
     settled = true;
@@ -3458,6 +3471,8 @@ function listenSpeech() {
       // a remedy instead of spinning spoken re-asks forever.
       if (silentStreak >= 3) {
         micParked = "I can't hear anything — check your microphone" + START_RETRY_SUFFIX;
+        retryBtn.hidden = false;
+        retryBtn.disabled = false;
         silenceParked = true;
         listenSpeech();
         return;
@@ -3484,19 +3499,23 @@ function listenSpeech() {
   recognition.onresult = (event) => settle(event.results[0][0].transcript.trim());
   recognition.onerror = (event) => {
     // Recovery needs user action outside the page, so these park until
-    // Start; only the network branch below retries next turn. (Evidence, not
+    // Retry; only the network branch below retries next turn. (Evidence, not
     // fear: Chrome and Safari remember denial instead of re-prompting, so a
-    // retry loop would be safe — parking is simply calmer, and Start is cheap
+    // retry loop would be safe — parking is simply calmer, and Retry is cheap
     // this early in a run.)
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
       if (!abandon()) return;
       micParked = "Microphone is blocked — allow it in your browser's site settings" + START_RETRY_SUFFIX;
+      retryBtn.hidden = false;
+      retryBtn.disabled = false;
       listenSpeech();
       return;
     }
     if (event.error === 'audio-capture') {
       if (!abandon()) return;
       micParked = 'No microphone found — connect one' + START_RETRY_SUFFIX;
+      retryBtn.hidden = false;
+      retryBtn.disabled = false;
       listenSpeech();
       return;
     }
@@ -3547,12 +3566,14 @@ async function respond(utterance) {
     try {
       await drive(step);
     } catch {
-      listenEl.textContent = 'Something went wrong — press Start to begin again.';
+      listenEl.textContent = 'Something went wrong — press Retry to begin again.';
+      retryBtn.hidden = false;
+      retryBtn.disabled = false;
     }
   } catch (err) {
     busy = false;
     // A failed pair answer re-opens the mic (bounded): a network blip must
-    // not strand an open pair voice-dead. Expired sessions need Start, not
+    // not strand an open pair voice-dead. Expired sessions need Retry, not
     // retries; past the bound the pair yields to tap/type with a hint.
     const pairOpen = cardOpen === true && pendingRef !== null;
     const retryable = !err || err.status !== 404;
@@ -3564,12 +3585,15 @@ async function respond(utterance) {
       listenEl.textContent = postError(err) + ' Tap Keep or Retake, or type your answer.';
     } else {
       listenEl.textContent = postError(err);
+      if (err && err.status === 404) {
+        retryBtn.hidden = false;
+        retryBtn.disabled = false;
+      }
     }
   }
 }
 
-startBtn.addEventListener('click', async () => {
-  if (!fixtureId) return;
+async function startFixedRun() {
   sessionId = null;
   pendingRef = null;
   clearReviewState();
@@ -3597,19 +3621,33 @@ startBtn.addEventListener('click', async () => {
   decisionEl.className = '';
   latestCustomerLink = null;
   linkEl.replaceChildren();
-  startBtn.disabled = true;
+  retryBtn.hidden = true;
+  retryBtn.disabled = true;
 
-  const created = await post('/api/session', { fixtureId });
-  sessionId = created.sessionId;
-  startBtn.disabled = false;
-  await drive(created);
-});
+  try {
+    const created = await post('/api/session', { fixtureId });
+    sessionId = created.sessionId;
+    await drive(created);
+  } catch (err) {
+    // A failed create never wedges the run: the listen line carries the
+    // postError message and Retry stands shown and enabled.
+    listenEl.textContent = postError(err);
+    retryBtn.hidden = false;
+    retryBtn.disabled = false;
+  }
+}
+
+retryBtn.addEventListener('click', () => { startFixedRun(); });
+// Cold open: the fixed-fixture run auto-starts on page load with no tap.
+// First speech rides the MMS-to-synthesis fallback until a gesture unlocks
+// audio playback.
+startFixedRun();
 
 $('typed').addEventListener('submit', (event) => {
   event.preventDefault();
   const value = inputEl.value.trim();
   // Typed success breaks a silence streak — and typing proves presence, so
-  // it unparks a silence park (denial/device parks still need Start).
+  // it unparks a silence park (denial/device parks still need Retry).
   if (value) {
     silentStreak = 0;
     if (silenceParked) {
