@@ -1527,6 +1527,8 @@ const PAGE = `<!doctype html>
          font:17px/1.55 ui-sans-serif,-apple-system,system-ui,sans-serif; max-width:56rem; }
   h1 { font-size:1.3rem; margin:0 0 .2rem; letter-spacing:-.01em; }
   .sub { color:var(--ink2); font-size:.85rem; margin:0 0 1.5rem; }
+  #progressDock { position:sticky; top:0; z-index:40; background:#0B0E13; padding:.5rem 0; margin:0 0 .5rem; }
+  #progressDock:empty { display:none; }
   .row { display:flex; flex-wrap:wrap; gap:.4rem; margin:0 0 .75rem; align-items:center; }
   button { background:var(--raised); color:inherit; border:1px solid #262d38; border-radius:.45rem;
            padding:.55rem .8rem; font:inherit; font-size:.82rem; cursor:pointer; min-height:44px; }
@@ -1558,21 +1560,21 @@ const PAGE = `<!doctype html>
   #coach:empty { display:none; }
   #panel { margin:1rem 0; }
   #panel:empty { display:none; }
-  #panel .card, #dockZone .card { background:#12161D; border:1px solid #222B3A; border-radius:10px;
+  #panel .card, #dockZone .card, #progressDock .card { background:#12161D; border:1px solid #222B3A; border-radius:10px;
                  padding:.8rem 1rem; }
-  #panel .ptitle, #dockZone .ptitle { font-size:.72rem; letter-spacing:.09em; text-transform:uppercase;
+  #panel .ptitle, #dockZone .ptitle, #progressDock .ptitle { font-size:.72rem; letter-spacing:.09em; text-transform:uppercase;
                    color:var(--ink2); margin-bottom:.4rem; }
-  #panel .ptext, #dockZone .ptext { margin-bottom:.6rem; }
+  #panel .ptext, #dockZone .ptext, #progressDock .ptext { margin-bottom:.6rem; }
   #panel .pverdict, #dockZone .pverdict { font-size:.85rem; color:var(--ink2); margin:.4rem 0 .6rem; }
   #panel .confirm-card img.confirm-img, #dockZone .confirm-card img.confirm-img { width:100%; border-radius:6px; margin:.4rem 0; display:block; }
   #panel .standin-label, #dockZone .standin-label { font-size:.85rem; color:var(--ink2); border:1px dashed #2b4a5e;
                           border-radius:6px; padding:.6rem .8rem; margin:.4rem 0; }
   #spoken:focus, #panel .ptitle:focus, #dockZone .ptitle:focus { outline:2px solid #35507e; outline-offset:2px; }
-  #panel ol.steps { list-style:none; padding:0; margin:0; display:flex; gap:.5rem; flex-wrap:wrap; }
-  #panel ol.steps li { font-size:.78rem; padding:.3rem .6rem; border:1px solid #222B3A;
+  #progressDock ol.steps { list-style:none; padding:0; margin:0; display:flex; gap:.5rem; flex-wrap:wrap; }
+  #progressDock ol.steps li { font-size:.78rem; padding:.3rem .6rem; border:1px solid #222B3A;
                        border-radius:6px; color:var(--ink2); display:block; border-bottom:1px solid #222B3A; }
-  #panel ol.steps li.done { color:#4ADE80; border-color:#1f4d33; }
-  #panel ol.steps li.active { color:#7DD3FC; border-color:#2b4a5e; }
+  #progressDock ol.steps li.done { color:#4ADE80; border-color:#1f4d33; }
+  #progressDock ol.steps li.active { color:#7DD3FC; border-color:#2b4a5e; }
   #panel dl.rows { margin:0; font-size:.85rem; }
   #panel dl.rows dt { color:var(--ink2); font-size:.72rem; text-transform:uppercase;
                       letter-spacing:.08em; }
@@ -1613,6 +1615,8 @@ const PAGE = `<!doctype html>
 
 <h1>Aria — AU Voice IDV demo</h1>
 <p class="sub">Voice-guided capture with Aria. Deterministic checks decide; voice narrates, never decides.</p>
+
+<div id="progressDock"></div>
 
 <div class="row" id="fixtures" role="group" aria-label="Choose a fixture"></div>
 <div class="row">
@@ -1661,6 +1665,7 @@ const listenEl = $('listen'), decisionEl = $('decision');
 const linkEl = $('customerLink');
 const noteEl = $('note'), startBtn = $('start'), inputEl = $('utterance');
 const orbEl = $('orb'), spokenEl = $('spoken'), panelEl = $('panel');
+const progressDock = $('progressDock');
 const captureWrap = $('captureWrap'), captureFrame = $('captureFrame');
 const videoEl = $('viewfinder'), guidesEl = $('guides'), coachEl = $('coach');
 const captureMeta = $('captureMeta'), lockBtn = $('lockBtn'), standinBtn = $('standinBtn');
@@ -1957,6 +1962,7 @@ function dropConfirmCard() {
 }
 function renderPanel(panel, fallbackText) {
   panelEl.replaceChildren();
+  progressDock.replaceChildren();
   dropConfirmCard();
   if (!panel || typeof panel !== 'object') {
     if (fallbackText) panelEl.textContent = fallbackText;
@@ -2054,13 +2060,16 @@ function renderPanel(panel, fallbackText) {
   // local by design, and the label confused Meta-keyed runs. The server
   // field stays for shape-pinned API twins.)
   // The confirm card docks above the input with the frame's view-follows
-  // behavior; every other panel renders in the middle region.
+  // behavior; progress steps stick to the top of the page; every other
+  // panel renders in the middle region.
   if (isConfirm) {
     dockZone.append(card);
     confirmCardEl = card;
     try {
       card.scrollIntoView({ block: 'nearest', behavior: REDUCED_MOTION ? 'auto' : 'smooth' });
     } catch { /* older browsers: the dock still lands */ }
+  } else if (panel.primitive === 'progress-steps') {
+    progressDock.append(card);
   } else {
     panelEl.append(card);
   }
@@ -3020,6 +3029,7 @@ startBtn.addEventListener('click', async () => {
   stopCapture();
   transcriptEl.replaceChildren();
   panelEl.replaceChildren();
+  progressDock.replaceChildren();
   setSpoken('', false);
   setCoach('');
   decisionEl.textContent = '';

@@ -266,3 +266,16 @@ test("near-miss echo sounds before the resolved turn", async () => {
   assert.ok(html.includes("step.echo"), "echo carried on the step");
   assert.ok(html.includes("speak(step.echo)"), "echo spoken first");
 });
+
+test("progress steps stick to the top of the page while the run scrolls", async () => {
+  const html = await getPage();
+  assert.ok(html.includes('id="progressDock"'), "progress dock slot at the top");
+  assert.ok(
+    html.indexOf('id="progressDock"') < html.indexOf('id="fixtures"'),
+    "progress dock lands above the run controls"
+  );
+  assert.ok(html.includes("#progressDock { position:sticky; top:0;"), "progress dock sticks to the viewport top");
+  assert.ok(html.includes("progressDock.replaceChildren()"), "progress dock single-replaces with the panel");
+  assert.ok(html.includes("progressDock.append(card)"), "progress-steps cards render in the top dock");
+  assert.ok(html.includes("#progressDock ol.steps"), "step list keeps its chrome in the dock");
+});
