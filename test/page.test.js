@@ -261,6 +261,32 @@ test("self-voicing yields to screen readers unless the toggle overrides", async 
   assert.ok(html.includes("aria-pressed"), "toggle exposes pressed semantics");
 });
 
+test("speech-in is Transcribe-first when keyed, recognition then typed otherwise", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("asrPrimary"), "keyed flag routes speech input");
+  assert.ok(html.includes("Muse Voice Transcribe"), "note line names the primary ASR");
+  assert.ok(html.includes("function listenTranscribe"), "transcribe-first turn listener");
+  assert.ok(html.includes("function listenSpeech"), "on-device turn listener kept as fallback");
+  assert.ok(html.includes("function captureTranscribe"), "transcribe-first command listener");
+  assert.ok(html.includes("function captureSpeech"), "on-device command listener kept as fallback");
+  assert.ok(html.includes("recordUtterance"), "utterance recorder with VAD silence-stop");
+  assert.ok(html.includes("MediaRecorder"), "mic recording for upload");
+  assert.ok(html.includes("blobToWav16k"), "recordings downmix to 16 kHz mono WAV");
+  assert.ok(html.includes("decodeAudioData"), "recorded blobs decode before upload");
+  assert.ok(html.includes("transcribeUtterance"), "utterances post to the ASR endpoint");
+  assert.ok(html.includes("'/transcribe'"), "client posts audio to /transcribe");
+  assert.ok(html.includes("stopRecording"), "retire paths release the mic");
+  assert.ok(html.includes("ASR_MAX_CHARS"), "utterance uploads capped client-side");
+  // The ladder never cycles: transcribe misses fall to SR, SR parks never climb back.
+  const transcribeFn = html.indexOf("function listenTranscribe");
+  const speechFn = html.indexOf("function listenSpeech");
+  const fallbackCall = html.indexOf("listenSpeech();", transcribeFn);
+  assert.ok(
+    fallbackCall !== -1 && fallbackCall < speechFn,
+    "transcribe misses fall back to on-device recognition",
+  );
+});
+
 test("near-miss echo sounds before the resolved turn", async () => {
   const html = await getPage();
   assert.ok(html.includes("step.echo"), "echo carried on the step");
