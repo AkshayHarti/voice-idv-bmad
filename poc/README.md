@@ -8,6 +8,10 @@ still generate. Barge-in cuts TTS when the caller starts talking again.
 ## Run it
 
 ```sh
+# 0. Deps (the `ws` client — Node's built-in WebSocket attempts the
+#    upgrade over HTTP/2 and dies with 1006 against this endpoint)
+npm install
+
 # 1. Key (never printed by the script)
 export MODEL_API_KEY="$(grep ^META_API_KEY= .env | cut -d= -f2-)"
 

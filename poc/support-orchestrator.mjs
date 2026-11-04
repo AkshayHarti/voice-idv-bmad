@@ -8,14 +8,19 @@
 //   node poc/support-orchestrator.mjs <input.pcm> [--no-audio] [--keywords a,b,c]
 //
 // Input is raw 16-bit LE mono PCM @ 24 kHz, streamed paced-realtime in
-// ~80 ms frames (see poc/README.md for the recording recipe). No npm
-// dependencies: global WebSocket + fetch (Node 22+).
+// ~80 ms frames (see poc/README.md for the recording recipe). Needs
+// `npm install` (ws client) + fetch (Node 22+).
+//
+// Sockets: the `ws` package, deliberately — Node's built-in WebSocket
+// attempts the upgrade over HTTP/2 (extended CONNECT, experimental) and
+// the handshake dies with 1006; `ws` speaks plain HTTP/1.1 Upgrade.
 //
 // Protocol: https://dev.meta.ai/docs/api-reference/voice/realtime
 // Key: MODEL_API_KEY, META_API_KEY, or the repo .env META_API_KEY.
 // The key is never printed.
 import { readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
+import WebSocket from "ws";
 
 const WS_URL = "wss://api.meta.ai/v1/asr/realtime";
 const CHAT_URL = "https://api.meta.ai/v1/chat/completions";
@@ -224,7 +229,7 @@ function ms() {
   return Date.now() - tStart;
 }
 
-ws.onopen = () => {
+ws.on("open", () => {
   console.log("✔ Connected to Meta Muse Voice stream. Sending handshake...");
   ws.send(
     JSON.stringify({
@@ -238,14 +243,15 @@ ws.onopen = () => {
       ...(keywords.length ? { keywords } : {}),
     }),
   );
-};
+});
 
-ws.onmessage = (event) => {
+ws.on("message", (data, isBinary) => {
+  if (isBinary) return; // binary frames never arrive server→client; ignore
   let msg;
   try {
-    msg = JSON.parse(String(event.data));
+    msg = JSON.parse(String(data));
   } catch {
-    return; // binary frames never arrive server→client; ignore
+    return;
   }
   if (!msg.type) {
     acked = true;
@@ -287,24 +293,22 @@ ws.onmessage = (event) => {
     default:
       console.log(`\n(unknown event type: ${msg.type})`);
   }
-};
+});
 
-ws.onerror = (event) => {
-  console.error(
-    "Muse WebSocket error:",
-    event?.message || event?.error?.message || "(no detail — proxies/VPNs often break WS upgrades)",
-  );
-};
+ws.on("error", (err) => {
+  console.error("Muse WebSocket error:", err?.message || "(no detail)");
+});
 
-ws.onclose = async (event) => {
-  console.log(`\n■ Stream closed (code ${event.code}${event.reason ? `: ${event.reason}` : ""})`);
-  if (event.code === 1006 && !acked) {
+ws.on("close", async (code, reasonBuf) => {
+  const reason = String(reasonBuf || "");
+  console.log(`\n■ Stream closed (code ${code}${reason ? `: ${reason}` : ""})`);
+  if (code === 1006 && !acked) {
     console.error("   Hint: 1006 before the handshake ack usually means the WS upgrade never completed —");
     console.error("   check direct egress to wss://api.meta.ai (no MITM proxy), then retry.");
   }
   await sayChain;
   setTimeout(() => process.exit(acked ? 0 : 1), 500);
-};
+});
 
 // Paced realtime pump: 80 ms frames, then half-close and await the flush.
 function pumpAudio() {
