@@ -16,7 +16,6 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONSENT =
   "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
 const PAGE_TITLE = "Aria — Voice onboarding agent";
-const PAGE_SUB = "Aria — Voice onboarding agent";
 const SUBMISSION_TITLE =
   "# Aria — Voice-First IDV — Cerebral Valley submission (indie track)";
 const LIMITATIONS_BLOCK = `## What this does not claim
@@ -52,12 +51,6 @@ function tagText(html, tag) {
   return matches[0][1];
 }
 
-function subLine(html) {
-  const matches = [...html.matchAll(/<p class="sub">([^<]*)<\/p>/g)];
-  assert.equal(matches.length, 1, "expected exactly one .sub node");
-  return matches[0][1];
-}
-
 /** The `.turn .who` CSS rule body (label styling only). */
 function whoRule(html) {
   const matches = [...html.matchAll(/\.turn \.who \{([^}]*)\}/g)];
@@ -83,11 +76,11 @@ function renderLabel(html, who) {
   return new Function("line", `return (${matches[0][1]});`)({ who });
 }
 
-test("page chrome names Aria (title, h1, sub-line)", async () => {
+test("page chrome names Aria once (title, h1, no sub-line)", async () => {
   const html = await getPage();
   assert.equal(tagText(html, "title"), PAGE_TITLE);
   assert.equal(tagText(html, "h1"), PAGE_TITLE);
-  assert.equal(subLine(html), PAGE_SUB);
+  assert.ok(!html.includes('<p class="sub">'), "no duplicate sub-line under the h1");
   // Decision headings moved behind the customer token gate (test/result.test.js):
   // the end-user page renders the verdict moment only.
   for (const heading of ["checks — failures first", "limitations", "attack surface"]) {

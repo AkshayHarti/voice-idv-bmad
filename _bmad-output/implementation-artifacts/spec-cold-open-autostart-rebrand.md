@@ -69,6 +69,7 @@ All paths relative to worktree `/tmp/voice-idv-cold-open` (branch `poc-cold-open
 - Strengthened the failure test: Retry's listener line is asserted to call `startFixedRun()`, so "retry re-attempts" is pinned, not just "retry is wired".
 - Verified by the orchestrator after the final edit: `npm test` 195 tests / 194 pass / 0 fail / 1 skipped (the skip is the pre-existing `{ skip: !LIVE }` live-meta test in untouched `test/meta-demo.test.js`); client `<script>` extracted from served `/page` (69,944 chars) passes `node --check`. Matrix rows cover: cold open, session-create failure, session expiry, MMS-to-synthesis fallback — all covering tests ran and passed.
 - Review patch (orchestrator-applied; implementer subagent could not continue): review found failure copy naming Retry while Retry stayed hidden at 8 sites — surfaced Retry 404-guarded in doKeep/doRetake/standin/doConfirm/reading-signal catches and unconditionally at the three mic parks; pinned all of them plus the previously unpinned doLock-404/drive-bail/respond pairs with slice assertions (3 new tests). Re-verified: `npm test` 198 / 197 pass / 0 fail / 1 pre-existing skip; extracted client script (70,683 chars) passes `node --check`.
+- Follow-up fix (post-done, human-renegotiated): the rebrand rendered the title twice (identical h1 + sub). Removed the `/page` header sub-line so the single line shows once; updated the aria/page header tests to pin title + h1 with no sub-line. Re-verified: `npm test` 198 / 197 pass / 0 fail / 1 pre-existing skip.
 
 ## Spec Change Log
 
