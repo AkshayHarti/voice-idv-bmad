@@ -2571,6 +2571,7 @@ standinBtn.addEventListener('click', async () => {
     if (sessionId !== standinSession) return;   // restart won the race: drop it
     setSpoken(res.text, false);
     await announceLock(res.text);
+    listenPair();
   } catch (err) {
     standinBtn.hidden = false;
     listenEl.textContent = postError(err);
@@ -2652,6 +2653,7 @@ async function onLocked(res, lockSession) {
   if (sessionId !== lockSession) return;   // restart won the race: drop it
   setSpoken(res.text, false);
   await announceLock(res.text);
+  listenPair();
 }
 
 /**
@@ -2752,6 +2754,19 @@ async function doConfirm() {
 function retireCard() {
   dropConfirmCard();
   cardOpen = false;
+  // Retire any pair-listen still running — its late result must never
+  // answer a closed pair (Start retires turn listeners the same way).
+  voiceGen += 1;
+  if (activeRecognition) {
+    try { activeRecognition.abort(); } catch { /* already gone */ }
+    activeRecognition = null;
+  }
+  stopRecording();
+  // The aborted listener's settle is retired by the voiceGen bump above,
+  // so it never resets its own UI: clear it here or 'Listening...' and
+  // the orb strand past the closed pair.
+  setOrb('idle');
+  listenEl.textContent = '';
   pendingSnapshot = null;
   pendingVerdict = null;
   pendingStandin = false;
@@ -3036,7 +3051,15 @@ async function drive(step) {
   stageEl.textContent = step.stage;
   if (voiceLock !== true) setSpoken(step.text, step.stage === 'decided');
   renderTranscript(step.transcript);
-  if (!step.report) renderPanel(step.panel, step.text);
+  // The confirm card survives pair-holding turns: chatter, help, and repeat
+  // speak over the open card instead of replacing it, so tap Keep/Retake
+  // stay live until keep/retake/deny closes the pair; only a served pair
+  // panel re-renders the card.
+  if (!step.report) {
+    const pairHeld = step.pendingCapture != null && cardOpen === true;
+    const pairServed = step.panel != null && step.panel.primitive === 'retake-pair';
+    if (!pairHeld || pairServed) renderPanel(step.panel, step.text);
+  }
   if (voiceLock === true) {
     focusConfirmHeading();
     setSpoken(pendingVerdict, false);
@@ -3072,8 +3095,11 @@ async function drive(step) {
   if (CAPTURE_SIGNAL[step.stage]) {
     listenEl.textContent = '';
     // Behind an open pair the frame stays held — sampling resumes on
-    // keep/retake, never under the confirm card.
+    // keep/retake, never under the confirm card. A held-open pair (fresh
+    // voice lock, re-ask nudge, chatter) keeps its voice pass: the mic
+    // stays on the pair until keep/retake/deny closes it.
     if (step.pendingCapture == null) await ensureCapture(step.stage);
+    else listenPair();
     return;
   }
 
@@ -3330,6 +3356,23 @@ function listen() {
   return listenSpeech();
 }
 
+/**
+ * Pair-listen: the single-purpose voice pass answering the open Keep/Retake
+ * pair. The capture command listener stays stopped behind the pair — this
+ * pass hears the answer instead, through the same speech-in router as any
+ * turn (Transcribe-first when keyed, on-device otherwise), posting the
+ * heard utterance to /say utterance-only via respond(). Tap and typed
+ * answers stay live throughout; a parked mic is never attempted.
+ */
+function listenPair() {
+  if (cardOpen !== true || pendingRef === null) return;
+  if (micParked) {
+    listenEl.textContent = micParked + ' Type your answer, then press Send.';
+    return;
+  }
+  listen();
+}
+
 async function listenTranscribe() {
   inputEl.focus({ preventScroll: true });
   voiceGen += 1;
@@ -3412,6 +3455,13 @@ function listenSpeech() {
         listenSpeech();
         return;
       }
+      // Open pair: silence re-listens through the pair pass (bounded by the
+      // 3× park above) instead of posting an empty turn — stillness holds
+      // the pair open for tap/type/voice alike.
+      if (cardOpen === true && pendingRef !== null) {
+        listenPair();
+        return;
+      }
       respond('');
       return;
     }
@@ -3470,9 +3520,13 @@ async function respond(utterance) {
   }
 
   // Voice "lock now" on a doc stage carries the locked crop like a tap —
-  // otherwise voice runs can never OCR and always fall back.
+  // otherwise voice runs can never OCR and always fall back. Pair
+  // utterances post utterance-only, never a crop: behind an open pair even
+  // a lock-now misfire only holds the pair (the server ignores crops
+  // there), so no pixels ride the answer.
   const sayBody = { utterance };
   if (
+    pendingRef === null &&
     LOCK_NOW_HEARD.test(utterance) &&
     (captureStage === 'awaiting_doc_front' || captureStage === 'awaiting_doc_back')
   ) {
