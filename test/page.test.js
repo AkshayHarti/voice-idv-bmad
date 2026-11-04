@@ -317,6 +317,20 @@ test("speech-out prefers the local MMS voice with synthesis fallback", async () 
   );
 });
 
+test("speech-in routes the realtime relay first with commands mode", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("asr-live"), "relay upgrade path");
+  assert.ok(html.includes("AudioWorklet"), "mic PCM worklet");
+  assert.ok(html.includes("idv-pcm"), "worklet processor name");
+  assert.ok(html.includes("function listenLive"), "live turn listener");
+  assert.ok(html.includes("function captureLive"), "live command listener");
+  assert.ok(html.includes("startLiveStream"), "shared stream setup");
+  assert.ok(html.includes("stopLiveAudio"), "retire paths release mic + socket");
+  assert.ok(html.includes("stopVoicePlayback"), "barge-in stops playback");
+  assert.ok(html.includes("'commands'"), "capture selects commands mode");
+  assert.ok(html.includes("Hearing: "), "partials caption the turn");
+});
+
 test("near-miss echo sounds before the resolved turn", async () => {
   const html = await getPage();
   assert.ok(html.includes("step.echo"), "echo carried on the step");

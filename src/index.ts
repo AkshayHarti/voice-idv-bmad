@@ -33,6 +33,8 @@ import { buildMeasurements } from "./measurements.js";
 import { spendTotal } from "./meta-models.js";
 import { generatePanel } from "./panels.js";
 import type { PanelRow } from "./panels.js";
+import { attachRelay } from "./asr_live.js";
+import type { RelayContext, RelaySocket } from "./asr_live.js";
 import { configuredProviders, narrate, ocrCrop, segment, templateNarration, transcribeAudio } from "./providers.js";
 import type { OcrFields, ProviderName } from "./providers.js";
 import { redactRef } from "./redact.js";
@@ -913,6 +915,20 @@ app.post("/api/session/:id/say", async (c) => {
   if (!session) return c.json({ error: "unknown_session" }, 404);
 
   const body = (await c.req.json().catch(() => ({}))) as { utterance?: string; crop?: unknown };
+  const out = await utteranceStep(session, c.req.param("id"), body);
+  return c.json(out.body, out.status);
+});
+
+/**
+ * One spoken (or relayed) utterance through the full voice chain: pair
+ * resolution, lock-now, review confirm, then say(). Shared by POST /say
+ * and the realtime relay so both hear identical behavior.
+ */
+async function utteranceStep(
+  session: Session,
+  id: string,
+  body: { utterance?: string; crop?: unknown },
+): Promise<{ status: 200 | 409; body: unknown }> {
   const utterance = String(body.utterance ?? "");
   // Voice equivalents for the open retake pair (closed intents untouched;
   // the advance still runs through the backend signal inside doKeep).
@@ -925,7 +941,7 @@ app.post("/api/session/:id/say", async (c) => {
     // splits "wait" (nudge) from "hold on" (hold-off turn).
     if (LOCK_NOW_UTTERANCE.test(utterance) || matchIntent(utterance) === "wait") {
       pushTurn(session, "you", utterance);
-      return c.json(await heldPairBody(session, c.req.param("id")));
+      return { status: 200, body: await heldPairBody(session, id) };
     }
     const resolved = resolvePair(utterance);
     if (resolved.kind === "keep" || resolved.kind === "retake") {
@@ -942,9 +958,9 @@ app.post("/api/session/:id/say", async (c) => {
           };
       const done =
         resolved.kind === "keep"
-          ? await doKeep(session, c.req.param("id"), utterance, echo)
-          : await doRetake(session, c.req.param("id"), utterance, echo);
-      return c.json(done.body, done.status);
+          ? await doKeep(session, id, utterance, echo)
+          : await doRetake(session, id, utterance, echo);
+      return { status: done.status, body: done.body };
     }
     if (resolved.kind === "reask") {
       pushTurn(session, "you", utterance);
@@ -962,7 +978,7 @@ app.post("/api/session/:id/say", async (c) => {
       };
       session.flow = { ...session.flow, last_turn: nudge };
       pushTurn(session, "system", nudge.text, nudge.kind);
-      return c.json(await stepBody(session, c.req.param("id"), null, false));
+      return { status: 200, body: await stepBody(session, id, null, false) };
     }
   }
   // Embedded or negated pair phrasing ("don't retake") holds the pair open:
@@ -973,7 +989,7 @@ app.post("/api/session/:id/say", async (c) => {
     /retake|take\s+(it\s+|that\s+)?again/i.test(utterance)
   ) {
     pushTurn(session, "you", utterance);
-    return c.json(await heldPairBody(session, c.req.param("id")));
+    return { status: 200, body: await heldPairBody(session, id) };
   }
   // Manual-lock voice path: "lock now" on a capture stage with no open
   // pair fires immediately through the same confirm landing as a tap
@@ -986,7 +1002,7 @@ app.post("/api/session/:id/say", async (c) => {
     // Voice locks carry the same crop the tap path grabs: without it,
     // every voice run degrades to fixture fallback.
     const voiceCrop = typeof body.crop === "string" ? body.crop : null;
-    return c.json(await performLock(session, c.req.param("id"), utterance, voiceCrop));
+    return { status: 200, body: await performLock(session, id, utterance, voiceCrop) };
   }
   // Review-gate voice path: affirm ("yes"/"ok"/...) or bare "confirm" on
   // the review stage advances through the backend signal — speech never
@@ -1005,14 +1021,14 @@ app.post("/api/session/:id/say", async (c) => {
       session.lastSample = null;
       resetArmState(session);
       pushTurn(session, "system", confirmed.last_turn?.text ?? "", confirmed.last_turn?.kind);
-      return c.json(await stepBody(session, c.req.param("id"), reviewIntent, true));
+      return { status: 200, body: await stepBody(session, id, reviewIntent, true) };
     }
   }
   const before = session.flow.stage;
   const next = say(session.flow, utterance);
   session.flow = next;
   // Full deny purge: captures are deleted on deny/revoke, not flagged.
-  if (next.last_intent === "deny") purgeCaptures(session, c.req.param("id"));
+  if (next.last_intent === "deny") purgeCaptures(session, id);
   // Voice veto: "wait" cancels the arm (a fresh clean run must re-arm)
   // and breaks the veto streak (a deliberate hold is not instability)
   // while coaching resumes underneath.
@@ -1028,8 +1044,44 @@ app.post("/api/session/:id/say", async (c) => {
 
   pushTurn(session, "you", utterance);
   pushTurn(session, "system", next.last_turn?.text ?? "", next.last_turn?.kind);
-  return c.json(await stepBody(session, c.req.param("id"), next.last_intent, next.stage !== before));
-});
+  return { status: 200, body: await stepBody(session, id, next.last_intent, next.stage !== before) };
+}
+
+/**
+ * Realtime speech-in entry: bridges an accepted browser socket to Meta.
+ * Called by the local server's upgrade handler (serve.mjs) — Hono never
+ * sees upgrades. Unknown sessions and unkeyed servers close out without
+ * dialing Meta.
+ */
+export function attachAsrLive(
+  browser: unknown,
+  sessionId: string,
+  opts?: { openMeta?: RelayContext["openMeta"]; metaUrl?: string },
+): void {
+  const sock = browser as RelaySocket;
+  const fail = (code: number, reason: string): void => {
+    try {
+      sock.close(code, reason);
+    } catch {
+      /* already gone */
+    }
+  };
+  const session = sessions.get(sessionId);
+  if (!session) return fail(4404, "unknown session");
+  const key = processEnv().META_API_KEY ?? "";
+  if (!key) return fail(4401, "realtime not configured");
+  attachRelay(sock, {
+    sessionId,
+    metaKey: key,
+    metaUrl: opts?.metaUrl,
+    utterance: async (text) =>
+      (await utteranceStep(session, sessionId, { utterance: text })).body,
+    // Commands-mode gate mirrors the SR capture listener: only lock/wait
+    // phrasing advances; chatter is swallowed before say() sees it.
+    filter: (text) => LOCK_NOW_UTTERANCE.test(text) || matchIntent(text) === "wait",
+    openMeta: opts?.openMeta,
+  });
+}
 
 app.post("/api/session/:id/signal", async (c) => {
   const session = sessions.get(c.req.param("id"));
@@ -3107,10 +3159,35 @@ function startCaptureListener() {
   if (micParked || sampling !== true) return;
   if (captureStage === null || !CAPTURE_SIGNAL[captureStage]) return;
   if (pendingRef !== null) return;
-  if (captureRec !== null || captureAsrBusy) return;
-  if (asrPrimary && sessionId) return captureTranscribe();
+  if (captureRec !== null || captureAsrBusy || liveSocket !== null) return;
+  if (asrPrimary && sessionId) return captureLive();
   if (!SR) return;
   captureSpeech();
+}
+
+/** Live command window: relay hears lock/wait, chatter swallowed server-side. */
+async function captureLive() {
+  if (liveSocket !== null) return;
+  const liveStage = captureStage;
+  const fallDown = () => {
+    stopLiveAudio();
+    if (SR) captureSpeech();
+    else restartCaptureListener();
+  };
+  const ok = await startLiveStream({
+    mode: 'commands',
+    onPartial: () => {},   // capture stays quiet: coaching already talks
+    onSpeechStart: () => { if (captureStage === liveStage) stopVoicePlayback(); },
+    onStep: (step) => {
+      if (captureStage !== liveStage || sampling !== true) return;
+      if (pendingRef !== null) return;
+      stopLiveAudio();
+      listenerErrors = 0;
+      drive(step);
+    },
+    onError: () => { if (captureStage === liveStage) fallDown(); },
+  });
+  if (!ok && captureStage === liveStage) fallDown();
 }
 
 let captureAsrBusy = false;
@@ -3189,6 +3266,7 @@ function stopCaptureListener() {
     captureRec = null;
   }
   stopRecording();
+  stopLiveAudio();
 }
 
 /** Veto disarm: drop the fire clock and resume the command listener. */
@@ -3322,12 +3400,171 @@ async function transcribeUtterance() {
   } catch { return null; }
 }
 
-// Speech-in router: Transcribe-first when keyed (primary ASR, spec §5),
-// on-device recognition otherwise. Transcribe misses fall down the same
-// ladder: recognition, then typed.
+// Realtime speech-in: mic PCM streams to the app relay, partials stream
+// back, served turns drive the run. First rung when keyed; misses fall
+// down the same ladder: file transcribe, recognition, then typed.
+const ASR_LIVE_RATE = 24000;
+const ASR_LIVE_FRAME = 1920;   // 80 ms of 16-bit mono PCM @ 24 kHz
+let liveSocket = null;
+let liveAudio = null;
+function stopLiveAudio() {
+  const l = liveAudio;
+  liveAudio = null;
+  if (liveSocket) {
+    try { liveSocket.close(); } catch { /* already gone */ }
+    liveSocket = null;
+  }
+  if (!l) return;
+  try { l.node.disconnect(); } catch { /* already gone */ }
+  try { l.source.disconnect(); } catch { /* already gone */ }
+  try { l.ctx.close(); } catch { /* already gone */ }
+  try { for (const t of l.stream.getTracks()) t.stop(); } catch { /* already stopped */ }
+}
+// AudioWorklet source (single quotes only: this file is a template literal).
+const LIVE_WORKLET = [
+  'let stash = [];',
+  "registerProcessor('idv-pcm', class extends AudioWorkletProcessor {",
+  '  process(inputs) {',
+  '    const ch = (inputs[0] && inputs[0][0]) || null;',
+  '    if (!ch) return true;',
+  '    const step = sampleRate / 24000;',
+  '    let pos = 0;',
+  '    const out = [];',
+  '    while (pos < ch.length) {',
+  '      const s = Math.max(-1, Math.min(1, ch[Math.floor(pos)]));',
+  '      out.push(s < 0 ? s * 0x8000 : s * 0x7FFF);',
+  '      pos += step;',
+  '    }',
+  '    stash = stash.concat(out);',
+  '    while (stash.length >= 1920) {',
+  '      const frame = new Int16Array(stash.slice(0, 1920));',
+  '      stash = stash.slice(1920);',
+  '      this.port.postMessage(frame.buffer, [frame.buffer]);',
+  '    }',
+  '    return true;',
+  '  }',
+  '});',
+  ''
+].join('\n');
+
+/**
+ * Open one live turn: socket + mic + worklet. Resolves true once audio
+ * flows, false on any setup failure. Served steps, captions, and
+ * barge-in cues arrive via opts; the socket stays open until the caller
+ * stops it or the server closes.
+ */
+async function startLiveStream(opts) {
+  stopLiveAudio();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const socket = new WebSocket(proto + '//' + location.host + '/api/session/' + sessionId + '/asr-live');
+  liveSocket = socket;
+  const opened = await new Promise((resolve) => {
+    socket.onopen = () => resolve(true);
+    socket.onerror = () => resolve(false);
+    setTimeout(() => resolve(false), 5000);
+  });
+  if (!opened || liveSocket !== socket) { stopLiveAudio(); return false; }
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch { stopLiveAudio(); return false; }
+  const ctx = new Ctx();
+  if (!ctx.audioWorklet) { stopLiveAudio(); return false; }
+  const blobUrl = URL.createObjectURL(new Blob([LIVE_WORKLET], { type: 'application/javascript' }));
+  try {
+    await ctx.audioWorklet.addModule(blobUrl);
+  } catch { stopLiveAudio(); return false; }
+  finally { URL.revokeObjectURL(blobUrl); }
+  const source = ctx.createMediaStreamSource(stream);
+  const node = new AudioWorkletNode(ctx, 'idv-pcm');
+  node.port.onmessage = (e) => {
+    if (liveSocket === socket && socket.readyState === 1 && e.data) {
+      try { socket.send(e.data); } catch { /* closing */ }
+    }
+  };
+  source.connect(node);
+  liveAudio = { ctx, stream, source, node };
+  if (opts.mode) {
+    try { socket.send(JSON.stringify({ type: 'mode', mode: opts.mode })); } catch { /* closing */ }
+  }
+  socket.onmessage = (event) => {
+    let msg = null;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.kind === 'partial') opts.onPartial(typeof msg.text === 'string' ? msg.text : '');
+    else if (msg.kind === 'speechStart') opts.onSpeechStart();
+    else if (msg.kind === 'speechEnd' && opts.onSpeechEnd) opts.onSpeechEnd();
+    else if (msg.kind === 'step' && msg.step) opts.onStep(msg.step);
+    else if (msg.kind === 'error') opts.onError(msg.message);
+  };
+  const gone = () => { if (liveSocket === socket) { liveSocket = null; opts.onError('closed'); } };
+  socket.onclose = gone;
+  socket.onerror = gone;
+  return true;
+}
+
+/** Stop any voice playback for barge-in (MMS audio and synthesis alike). */
+function stopVoicePlayback() {
+  stopTtsAudio();
+  if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch { /* already clear */ } }
+}
+
+// Speech-in router: realtime relay first when keyed, then file
+// transcribe, on-device recognition, and typed — same ladder every path.
 function listen() {
-  if (asrPrimary && !micParked && sessionId) return listenTranscribe();
+  if (asrPrimary && !micParked && sessionId) return listenLive();
   return listenSpeech();
+}
+
+async function listenLive() {
+  inputEl.focus({ preventScroll: true });
+  voiceGen += 1;
+  const gen = voiceGen;
+  stopRecording();
+  if (activeRecognition) {
+    try { activeRecognition.abort(); } catch { /* already gone */ }
+    activeRecognition = null;
+  }
+  listenEl.textContent = 'Listening...';
+  setOrb('listening');
+  let stepped = false;
+  let quietTimer = null;
+  const disarmQuiet = () => { if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; } };
+  const armQuiet = () => {
+    disarmQuiet();
+    quietTimer = setTimeout(() => {
+      if (gen === voiceGen && !stepped) { stopLiveAudio(); listenTranscribe(); }
+    }, 15000);
+  };
+  const ok = await startLiveStream({
+    onPartial: (text) => {
+      if (gen !== voiceGen) return;
+      listenEl.textContent = text ? 'Hearing: ' + text : 'Listening...';
+      if (text) armQuiet();   // speech in progress extends the window
+    },
+    onSpeechStart: () => { if (gen === voiceGen) stopVoicePlayback(); },
+    onStep: (step) => {
+      if (gen !== voiceGen) return;
+      stepped = true;
+      disarmQuiet();
+      stopLiveAudio();
+      setOrb('idle');
+      listenEl.textContent = '';
+      silentStreak = 0;
+      drive(step);
+    },
+    onError: () => {
+      if (gen !== voiceGen) return;
+      disarmQuiet();
+      stopLiveAudio();
+      listenTranscribe();
+    },
+  });
+  if (gen !== voiceGen || stepped) { disarmQuiet(); return; }
+  if (!ok) { stopLiveAudio(); listenTranscribe(); return; }
+  armQuiet();   // a quiet window gives way to file transcribe
 }
 
 async function listenTranscribe() {
@@ -3335,6 +3572,7 @@ async function listenTranscribe() {
   voiceGen += 1;
   const gen = voiceGen;
   stopRecording();
+  stopLiveAudio();
   if (activeRecognition) {
     try { activeRecognition.abort(); } catch { /* already gone */ }
     activeRecognition = null;
@@ -3357,6 +3595,7 @@ async function listenTranscribe() {
 }
 
 function listenSpeech() {
+  stopLiveAudio();
   inputEl.focus({ preventScroll: true });
   if (!SR || micParked) {
     listenEl.textContent = micParked
@@ -3508,6 +3747,7 @@ startBtn.addEventListener('click', async () => {
     activeRecognition = null;
   }
   stopRecording();
+  stopLiveAudio();
   micParked = null;
   silenceParked = false;
   silentStreak = 0;
