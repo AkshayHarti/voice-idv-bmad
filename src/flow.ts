@@ -475,7 +475,7 @@ export function signal(s: FlowState, ev: string): FlowState {
           last_turn: withPanel(
             {
               kind: "progress",
-              text: "Good framing. Hold still one second…",
+              text: "Got the front. Reading the licence…",
             },
             "reading_front",
           ),

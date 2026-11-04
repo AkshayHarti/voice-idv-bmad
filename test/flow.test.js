@@ -9,6 +9,11 @@ test("speech cannot advance Stage; back required; not-ready is deny", () => {
   assert.equal(s.stage, "awaiting_doc_front");
   s = signal(s, "front_captured");
   assert.equal(s.stage, "reading_front");
+  // The reading turn names the capture, never the coach's clean-sample
+  // line: "hold still" must not sound after the user already kept.
+  assert.equal(s.last_turn.kind, "progress");
+  assert.match(s.last_turn.text, /Got the front/);
+  assert.doesNotMatch(s.last_turn.text, /Good framing/);
   let d = startRun("nsw-dl-missing-back");
   d = say(d, "I consent"); d = signal(d, "front_captured");
   assert.equal(d.stage, "awaiting_doc_back");
