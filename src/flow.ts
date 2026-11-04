@@ -102,7 +102,7 @@ export function withPanel(turn: Turn, stage: Stage, data: PanelData = {}): Turn 
 }
 
 const CONSENT_TEXT =
-  "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
+  "I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
 
 function consentTurn(): Turn {
   return withPanel({ kind: "consent", text: CONSENT_TEXT }, "awaiting_consent");

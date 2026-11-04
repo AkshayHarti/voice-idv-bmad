@@ -14,7 +14,7 @@ import app from "../dist/index.js";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const CONSENT =
-  "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
+  "I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
 const INTRO =
   "Hi, I'm Aria, your voice onboarding agent. I'll walk you through your ID check, one step at a time.";
 const PAGE_TITLE = "Aria — Voice onboarding agent";
@@ -123,7 +123,8 @@ test("intro turn opens the run; consent follows byte-identical and replay repeat
   assert.equal(consented.body.turn, "consent");
   assert.equal(consented.body.text, CONSENT);
   assert.equal(consented.body.stage, "awaiting_consent");
-  assert.ok(CONSENT.includes("Aria") && CONSENT.includes("I consent"));
+  assert.ok(CONSENT.includes("I consent"));
+  assert.ok(!CONSENT.includes("Aria"), "no redundant self-naming after the intro");
   assert.deepEqual(
     consented.body.transcript.map((l) => l.text),
     [INTRO, CONSENT],

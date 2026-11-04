@@ -73,6 +73,7 @@ context: ["{project-root}/docs/seeds/GLOSSARY.md"]
 
 - `text-transform:none` applied to the shared `.turn .who` rule (covers assistant + subject labels); textContent assertions unaffected.
 - Suite: 40 tests, 39 pass, 0 fail, 1 skip (live-meta, no key in env). All 5 matrix rows covered by ran tests.
+- Follow-up (human-renegotiated, branch poc-cold-open-autostart): consent literal dropped its "I'm Aria." open (now "I'll guide you by voice…") since the intro turn carries the self-introduction; frozen literal above is superseded for the consent text only.
 
 ## Spec Change Log
 
