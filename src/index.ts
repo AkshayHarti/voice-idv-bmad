@@ -2066,6 +2066,11 @@ function renderPanel(panel, fallbackText) {
   // behavior; progress steps stick to the top of the page; every other
   // panel renders in the middle region.
   if (isConfirm) {
+    // The preview replaces the live frame: hide the viewfinder while the
+    // confirm card is open. Retake/keep restores it via ensureCapture (or
+    // stopCapture when the stage closes) — the stream stays up for an
+    // instant retake.
+    captureWrap.hidden = true;
     dockZone.append(card);
     confirmCardEl = card;
     try {
@@ -2110,7 +2115,10 @@ async function doRetake() {
   try {
     const step = await post('/api/session/' + sessionId + '/retake', {});
     busy = false;
-    // Back to guidance blue: the lock flash must not survive a retake.
+    // The confirm card hid the frame: unhide before the redraw so guides
+    // measure the live box, not a hidden zero rect. Back to guidance blue:
+    // the lock flash must not survive a retake.
+    captureWrap.hidden = false;
     captureFrame.classList.remove('locked');
     drawGuides(captureStage, false);
     await drive(step);
@@ -2216,6 +2224,8 @@ async function ensureCapture(stage) {
   if (captureStream !== null && captureStage === stage) {
     sampling = true;
     prevLuma = null;   // fresh motion baseline: the held frame is stale
+    drawGuides(stage, false);   // voice retakes resume here with no tap-path
+    // redraw: guidance blue, measured after showCapture unhides the frame
     startCaptureListener();
     return;
   }

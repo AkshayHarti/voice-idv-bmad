@@ -290,3 +290,17 @@ test("capture frame sticks to the dock above the input while chat scrolls", asyn
   );
   assert.ok(html.includes("#composerDock { position:sticky; bottom:0;"), "composer pins frame and input to the viewport bottom");
 });
+
+test("captured preview replaces the live frame until keep/retake resolves", async () => {
+  const html = await getPage();
+  const hideAt = html.indexOf("captureWrap.hidden = true");
+  assert.ok(
+    hideAt > html.indexOf("function renderPanel") && hideAt < html.indexOf("dockZone.append(card)"),
+    "confirm card hides the live frame before docking"
+  );
+  assert.ok(
+    html.indexOf("captureWrap.hidden = false") < html.indexOf("drawGuides(captureStage, false)"),
+    "retake unhides the frame before guides redraw"
+  );
+  assert.ok(html.includes("drawGuides(stage, false)"), "resumed capture redraws guidance guides");
+});
