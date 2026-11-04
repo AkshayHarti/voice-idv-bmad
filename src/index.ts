@@ -590,19 +590,34 @@ app.get("/api/run/:id", async (c) => {
   return c.json(evaluateFixture(id));
 });
 
-app.get("/api/providers", async (c) =>
-  c.json({ ...configuredProviders(processEnv()), tts: await mmsUp(processEnv()) }),
-);
+app.get("/api/providers", async (c) => {
+  const voice = await ttsVoiceId(processEnv());
+  return c.json({
+    ...configuredProviders(processEnv()),
+    tts: voice !== "none",
+    ttsVoice: voice,
+  });
+});
 
-/** Local MMS voice reachability for the speech-out flag (short fuse, never throws). */
-async function mmsUp(env: Record<string, string | undefined>): Promise<boolean> {
+/**
+ * Local TTS sidecar voice id for the speech-out flag: seamless-v2, mms,
+ * unknown (up but unidentified), or none (down). Short fuse, never throws.
+ */
+async function ttsVoiceId(
+  env: Record<string, string | undefined>,
+): Promise<"seamless-v2" | "mms" | "unknown" | "none"> {
   try {
     const res = await fetch(`${env.VOICE_TTS_URL ?? "http://127.0.0.1:8765"}/health`, {
       signal: AbortSignal.timeout(1500),
     });
-    return res.ok;
+    if (!res.ok || typeof res.json !== "function") return res.ok ? "unknown" : "none";
+    const health = (await res.json().catch(() => ({}))) as { model?: unknown };
+    const model = typeof health.model === "string" ? health.model.toLowerCase() : "";
+    if (model.includes("seamless")) return "seamless-v2";
+    if (model.includes("mms")) return "mms";
+    return "unknown";
   } catch {
-    return false;
+    return "none";
   }
 }
 
@@ -617,8 +632,9 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 /**
  * Speech-out for one turn: text in, WAV data URL out, via the local Meta
- * MMS server. Never a 4xx for synthesis itself — outage/empty read as
- * audio: null so the client falls back to browser synthesis.
+ * TTS sidecar (Seamless v2 or MMS, per VOICE_TTS_URL). Never a 4xx for
+ * synthesis itself — outage/empty read as audio: null so the client
+ * falls back to browser synthesis.
  */
 app.post("/api/tts", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { text?: unknown };
@@ -638,9 +654,10 @@ app.post("/api/tts", async (c) => {
     if (!res.ok || !kind.includes("audio/")) throw new Error(`tts ${res.status}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes.length < 1000) throw new Error("tts returned no audio");
+    const voice = await ttsVoiceId(processEnv());
     return c.json({
       audio: "data:audio/wav;base64," + bytesToBase64(bytes),
-      provider: "mms-local",
+      provider: voice === "none" ? "local" : `${voice}-local`,
       skipped: [],
     });
   } catch (error) {
@@ -1999,12 +2016,13 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 // unkeyed runs keep on-device recognition. Set by the providers fetch.
 let asrPrimary = false;
 
+const TTS_VOICE_LABELS = { 'seamless-v2': 'Seamless v2 voice', 'mms': 'local MMS voice', 'unknown': 'local voice' };
 fetch('/api/providers').then(r => r.json()).then(p => {
   asrPrimary = p.meta === true;
-  ttsMms = p.tts === true;
+  ttsLocal = p.tts === true;
   noteEl.textContent = 'Narration: ' + (p.meta ? 'Meta Model API' : p.openrouter ? 'OpenRouter' : 'local templates')
     + ' · Speech in: ' + (asrPrimary ? 'Muse Voice Transcribe' : SR ? 'browser recognition' : 'typed only')
-    + ' · Speech out: ' + (ttsMms ? 'local MMS voice' : 'browser synthesis');
+    + ' · Speech out: ' + (ttsLocal ? (TTS_VOICE_LABELS[p.ttsVoice] || 'local voice') : 'browser synthesis');
 });
 
 fetch('/api/runs').then(r => r.json()).then(runs => {
@@ -2079,9 +2097,9 @@ voiceToggle.addEventListener('click', () => {
   voiceToggle.textContent = voiceOverride === null ? 'Voice: auto' : voiceOverride ? 'Voice: on' : 'Voice: off';
   voiceToggle.setAttribute('aria-pressed', String(voiceOverride === true));
 });
-// MMS voice when the server reports the local TTS up; browser synthesis
-// otherwise. Set by the providers fetch alongside asrPrimary.
-let ttsMms = false;
+// Sidecar voice when the server reports the local TTS up; browser
+// synthesis otherwise. Set by the providers fetch alongside asrPrimary.
+let ttsLocal = false;
 let ttsAudio = null;
 function stopTtsAudio() {
   if (ttsAudio) {
@@ -2097,12 +2115,12 @@ function speak(text) {
     if (voiceOverride === false || (voiceOverride === null && srDetected === true)) {
       return resolve();
     }
-    if (ttsMms) return resolve(speakMms(text));
+    if (ttsLocal) return resolve(speakSidecar(text));
     resolve(speakSynth(text));
   });
 }
-/** One turn through the local MMS voice, falling back to synthesis on any miss. */
-function speakMms(text) {
+/** One turn through the local sidecar voice, falling back to synthesis on any miss. */
+function speakSidecar(text) {
   return new Promise((resolve) => {
     setOrb('speaking');
     let done = false;

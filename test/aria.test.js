@@ -317,6 +317,7 @@ test("API key sets stable: runs, run, providers", async () => {
     openrouter: "boolean",
     replicate: "boolean",
     tts: "boolean",
+    ttsVoice: "string",
   });
 });
 

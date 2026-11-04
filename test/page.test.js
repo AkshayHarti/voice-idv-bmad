@@ -302,15 +302,17 @@ test("speech-in is Transcribe-first when keyed, recognition then typed otherwise
   );
 });
 
-test("speech-out prefers the local MMS voice with synthesis fallback", async () => {
+test("speech-out prefers the local sidecar voice with synthesis fallback", async () => {
   const html = await getPage();
-  assert.ok(html.includes("ttsMms"), "keyed flag routes speech output");
-  assert.ok(html.includes("local MMS voice"), "note line names the MMS voice");
-  assert.ok(html.includes("function speakMms"), "MMS playback path");
+  assert.ok(html.includes("ttsLocal"), "keyed flag routes speech output");
+  assert.ok(html.includes("TTS_VOICE_LABELS"), "note line maps the ttsVoice id");
+  assert.ok(html.includes("Seamless v2 voice"), "Seamless label present");
+  assert.ok(html.includes("local MMS voice"), "MMS label kept for the MMS sidecar");
+  assert.ok(html.includes("function speakSidecar"), "sidecar playback path");
   assert.ok(html.includes("function speakSynth"), "synthesis path kept as fallback");
   assert.ok(html.includes("stopTtsAudio"), "barge-in and interrupts stop playback");
   assert.ok(html.includes("'/api/tts'"), "turns post to the TTS endpoint");
-  const mmsFn = html.indexOf("function speakMms");
+  const mmsFn = html.indexOf("function speakSidecar");
   assert.ok(
     html.indexOf("speakSynth(text)", mmsFn) !== -1 &&
     html.indexOf("speakSynth(text)", mmsFn) < html.indexOf("function speakSynth"),

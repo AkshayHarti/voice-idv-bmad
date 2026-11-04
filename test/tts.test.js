@@ -1,7 +1,8 @@
-// Speech-out via the local MMS voice: /api/tts contract + providers flag.
-// Pins: WAV bytes pass through as a data URL, every failure mode reads
-// as audio: null (never a 4xx) so the client falls back to synthesis,
-// and /api/providers reports tts reachability. Precondition: build.
+// Speech-out via the local TTS sidecar (Seamless v2 or MMS): /api/tts
+// contract + providers flag. Pins: WAV bytes pass through as a data URL,
+// every failure mode reads as audio: null (never a 4xx) so the client
+// falls back to synthesis, and /api/providers reports tts reachability
+// plus the ttsVoice id. Precondition: build.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import app from "../dist/index.js";
@@ -32,8 +33,11 @@ function wavBytes(n) {
   return buf;
 }
 
-function okAudio(bytes) {
+function okAudio(bytes, model = "facebook/mms-tts-eng") {
   return async (url, opts) => {
+    if (String(url).endsWith("/health")) {
+      return { ok: true, json: async () => ({ ok: true, model }) };
+    }
     assert.ok(String(url).endsWith("/speak"), `posts to the sidecar (got ${url})`);
     assert.equal(opts.method, "POST");
     assert.ok(JSON.parse(opts.body).text.length > 0, "text carried");
@@ -105,5 +109,25 @@ test("providers flag reports local TTS reachability", async () => {
   await withStubMms(async () => { throw new Error("down"); }, async () => {
     const res = await app.request("/api/providers");
     assert.equal((await res.json()).tts, false, "unreachable sidecar reads false");
+  });
+});
+
+test("tts voice id follows the sidecar health model", async () => {
+  for (const [model, voice] of [
+    ["facebook/seamless-m4t-v2-large", "seamless-v2"],
+    ["facebook/mms-tts-eng", "mms"],
+  ]) {
+    await withStubMms(okAudio(wavBytes(2000), model), async () => {
+      const providers = await (await app.request("/api/providers")).json();
+      assert.equal(providers.tts, true);
+      assert.equal(providers.ttsVoice, voice, `health model ${model}`);
+      const res = await post("/api/tts", { text: "Hello there." });
+      assert.equal(res.body.provider, `${voice}-local`, "tts names its voice");
+      assert.ok(res.body.audio.startsWith("data:audio/wav;base64,"));
+    });
+  }
+  await withStubMms(async () => { throw new Error("down"); }, async () => {
+    const providers = await (await app.request("/api/providers")).json();
+    assert.equal(providers.ttsVoice, "none", "down sidecar reads none");
   });
 });
