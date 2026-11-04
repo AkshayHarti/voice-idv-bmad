@@ -219,6 +219,20 @@ test("verdict turn sounds before the keep/retake question", async () => {
   assert.ok(html.includes("GENERIC_VERDICT"), "generic verdict fallback");
 });
 
+test("review gate renders retained snapshots plus detail rows with a confirm pair", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("review-confirm"), "review-confirm primitive renders");
+  assert.ok(html.includes("stageSnapshots"), "per-stage snapshots retained for review");
+  assert.ok(html.includes("retainSnapshot"), "locks retain their snapshot");
+  assert.ok(html.includes("clearSnapshots"), "decided/purged/restarted runs drop snapshots");
+  assert.ok(html.includes("review-img"), "review image styling");
+  assert.ok(html.includes("reviewHeading"), "review heading focus target");
+  assert.ok(html.includes("focusReviewHeading"), "focus moves to the review card");
+  assert.ok(html.includes("doConfirm"), "confirm posts the review signal");
+  assert.ok(html.includes("review_confirmed"), "confirm fires review_confirmed");
+  assert.ok(html.includes("choice.id === 'confirm'"), "confirm choice routes to doConfirm");
+});
+
 test("snapshot stays client-side and clears on keep/retake/stop", async () => {
   const html = await getPage();
   assert.ok(html.includes("never posted"), "snapshot never leaves the device");
@@ -287,6 +301,22 @@ test("speech-in is Transcribe-first when keyed, recognition then typed otherwise
   );
 });
 
+test("speech-out prefers the local MMS voice with synthesis fallback", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("ttsMms"), "keyed flag routes speech output");
+  assert.ok(html.includes("local MMS voice"), "note line names the MMS voice");
+  assert.ok(html.includes("function speakMms"), "MMS playback path");
+  assert.ok(html.includes("function speakSynth"), "synthesis path kept as fallback");
+  assert.ok(html.includes("stopTtsAudio"), "barge-in and interrupts stop playback");
+  assert.ok(html.includes("'/api/tts'"), "turns post to the TTS endpoint");
+  const mmsFn = html.indexOf("function speakMms");
+  assert.ok(
+    html.indexOf("speakSynth(text)", mmsFn) !== -1 &&
+    html.indexOf("speakSynth(text)", mmsFn) < html.indexOf("function speakSynth"),
+    "MMS misses fall back to synthesis for the same sentence",
+  );
+});
+
 test("near-miss echo sounds before the resolved turn", async () => {
   const html = await getPage();
   assert.ok(html.includes("step.echo"), "echo carried on the step");
@@ -315,6 +345,98 @@ test("capture frame sticks to the dock above the input while chat scrolls", asyn
     "composer keeps the dock above the typed input"
   );
   assert.ok(html.includes("#composerDock { position:sticky; bottom:0;"), "composer pins frame and input to the viewport bottom");
+});
+
+test("open pair answers by voice: pair-listen opens after the question sounds", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("function listenPair"), "single-purpose pair voice pass");
+  // Both lock landings start the pass strictly after the question finishes sounding.
+  const onLocked = html.slice(html.indexOf("async function onLocked"), html.indexOf("function enterArm"));
+  assert.ok(
+    onLocked.indexOf("await announceLock(res.text);") !== -1 &&
+    onLocked.indexOf("await announceLock(res.text);") < onLocked.indexOf("listenPair();"),
+    "tap/auto-fire lock listens after the question sounds",
+  );
+  const standin = html.slice(html.indexOf("standinBtn.addEventListener"), html.indexOf("const LOCK_TIMEOUT_MS"));
+  assert.ok(
+    standin.indexOf("await announceLock(res.text);") !== -1 &&
+    standin.indexOf("await announceLock(res.text);") < standin.indexOf("listenPair();"),
+    "stand-in lock listens after the question sounds",
+  );
+  // Drive re-listens while the pair holds the stage (fresh voice lock, nudge, chatter).
+  assert.ok(html.includes("else listenPair();"), "drive keeps the mic on a held-open pair");
+  // Through the shared router: Transcribe-first when keyed, on-device otherwise.
+  const pair = html.slice(html.indexOf("function listenPair"), html.indexOf("async function listenTranscribe"));
+  assert.ok(pair.includes("listen();"), "pair pass routes through listen()");
+  assert.ok(!pair.includes("takeCrop"), "pair pass never grabs pixels");
+  assert.ok(!pair.includes("startCaptureListener"), "pair pass never resurrects the command listener");
+  assert.ok(!pair.includes("captureRec"), "pair pass never touches the command recognizer");
+});
+
+test("pair silence re-listens bounded by the park policy; parked pairs stay tap/type", async () => {
+  const html = await getPage();
+  const speech = html.slice(html.indexOf("function listenSpeech"), html.indexOf("async function respond"));
+  const parkAt = speech.indexOf("silentStreak >= 3");
+  const pairAt = speech.indexOf("cardOpen === true && pendingRef !== null");
+  const relistenAt = speech.indexOf("listenPair();", pairAt);
+  const postAt = speech.indexOf("respond('');");
+  assert.ok(parkAt !== -1 && pairAt !== -1 && relistenAt !== -1 && postAt !== -1, "pair silence branch exists");
+  assert.ok(parkAt < pairAt, "the 3x park still bounds pair silence");
+  assert.ok(relistenAt < postAt, "pair silence re-listens instead of posting an empty turn");
+  // Parked pair: no listen attempt, remedy + typed hint, tap/type carry it.
+  const pair = html.slice(html.indexOf("function listenPair"), html.indexOf("async function listenTranscribe"));
+  assert.ok(pair.includes("if (micParked)"), "parked pairs skip the mic");
+  assert.ok(pair.indexOf("if (micParked)") < pair.indexOf("listen();"), "no listen attempt while parked");
+  assert.ok(pair.includes("Type your answer, then press Send."), "typed fallback named");
+});
+
+test("pair utterances post utterance-only; keep/retake stay bare", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("const sayBody = { utterance };"), "say body starts utterance-only");
+  const respond = html.slice(html.indexOf("async function respond"), html.indexOf("startBtn.addEventListener"));
+  assert.ok(respond.includes("pendingRef === null"), "no crop rides an open pair");
+  assert.ok(html.includes("'/keep', {}"), "keep POSTs stay {}");
+  assert.ok(html.includes("'/retake', {}"), "retake POSTs stay {}");
+});
+
+test("a retired pair drops late voice; the command listener stays stopped behind it", async () => {
+  const html = await getPage();
+  const retire = html.slice(html.indexOf("function retireCard"), html.indexOf("function clearReviewState"));
+  assert.ok(retire.includes("voiceGen += 1"), "retire wins the race against late results");
+  assert.ok(retire.includes("activeRecognition.abort()"), "retire aborts the in-flight recognizer");
+  assert.ok(retire.includes("stopRecording()"), "retire releases the recorder");
+  assert.ok(retire.includes("setOrb('idle')"), "retire clears the listening orb");
+  assert.ok(retire.includes("listenEl.textContent = '';"), "retire clears the listening hint");
+  const onLocked = html.slice(html.indexOf("async function onLocked"), html.indexOf("function enterArm"));
+  assert.ok(onLocked.includes("stopCaptureListener()"), "lock stops the command listener");
+  const starter = html.slice(html.indexOf("function startCaptureListener"), html.indexOf("let captureAsrBusy"));
+  assert.ok(starter.includes("if (pendingRef !== null) return;"), "command listener never runs behind an open pair");
+});
+
+test("pair-holding turns speak over the card instead of replacing it", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("pairHeld"), "drive detects a held-open pair");
+  assert.ok(html.includes("!pairHeld || pairServed"), "only a served pair panel re-renders the card");
+});
+
+test("failed pair answer re-opens the mic, then yields to tap/type", async () => {
+  const html = await getPage();
+  const respond = html.slice(html.indexOf("async function respond"), html.indexOf("startBtn.addEventListener"));
+  assert.ok(respond.includes("pairPostFails"), "pair failures counted separately from the silence streak");
+  assert.ok(respond.includes("err.status !== 404"), "expired sessions need Start, not retries");
+  assert.ok(respond.indexOf("listenPair();") !== -1, "failed pair answer re-arms the mic");
+  assert.ok(respond.indexOf("pairPostFails < 2") !== -1, "re-arm is bounded");
+  assert.ok(respond.includes("Tap Keep or Retake, or type your answer."), "bound expiry names the tap/type fallback");
+  const retire = html.slice(html.indexOf("function retireCard"), html.indexOf("function clearReviewState"));
+  assert.ok(retire.includes("pairPostFails = 0"), "pair close resets the failure count");
+});
+
+test("stalled transcribe upload falls through instead of freezing the turn", async () => {
+  const html = await getPage();
+  const up = html.slice(html.indexOf("async function transcribeUtterance"), html.indexOf("async function listenTranscribe"));
+  assert.ok(up.includes("AbortController"), "upload carries an abort signal");
+  assert.ok(up.includes("15000"), "upload bounded at fifteen seconds");
+  assert.ok(up.includes("clearTimeout(timer)"), "settled uploads release the timer");
 });
 
 test("captured preview replaces the live frame until keep/retake resolves", async () => {

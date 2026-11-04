@@ -9,6 +9,11 @@ test("speech cannot advance Stage; back required; not-ready is deny", () => {
   assert.equal(s.stage, "awaiting_doc_front");
   s = signal(s, "front_captured");
   assert.equal(s.stage, "reading_front");
+  // The reading turn names the capture, never the coach's clean-sample
+  // line: "hold still" must not sound after the user already kept.
+  assert.equal(s.last_turn.kind, "progress");
+  assert.match(s.last_turn.text, /Got the front/);
+  assert.doesNotMatch(s.last_turn.text, /Good framing/);
   let d = startRun("nsw-dl-missing-back");
   d = say(d, "I consent"); d = signal(d, "front_captured");
   assert.equal(d.stage, "awaiting_doc_back");
@@ -144,7 +149,7 @@ test("deny purges captures and aborts to idle", () => {
   assert.equal(say(startRun("nsw-dl-clean"), "don't wait").last_intent, "deny");
 });
 
-test("all 8 Turn kinds are produced somewhere in the flow", () => {
+test("all 9 Turn kinds are produced somewhere in the flow", () => {
   const kinds = new Set();
   kinds.add(startRun("nsw-dl-clean").last_turn.kind); // consent
   let c = say(startRun("nsw-dl-clean"), "ready");
@@ -156,12 +161,41 @@ test("all 8 Turn kinds are produced somewhere in the flow", () => {
   kinds.add(say(c, "no, stop").last_turn.kind); // abort_confirm
   kinds.add(coach({ screenshot: true }).kind); // warn
   let f = say(startRun("nsw-dl-clean"), "ready");
-  for (const ev of ["front_captured", "frames_done", "back_captured", "frames_done", "challenge_done", "selfie_captured", "tier_done"]) {
+  for (const ev of ["front_captured", "frames_done", "back_captured", "frames_done", "challenge_done", "selfie_captured"]) {
+    f = signal(f, ev);
+  }
+  assert.equal(f.stage, "awaiting_review");
+  kinds.add(f.last_turn.kind); // review
+  for (const ev of ["review_confirmed", "tier_done"]) {
     f = signal(f, ev);
   }
   assert.equal(f.stage, "decided");
   kinds.add(f.last_turn.kind); // result
-  for (const k of ["consent", "instruct", "re-ask", "replay", "progress", "warn", "result", "abort_confirm"]) {
+  for (const k of ["consent", "instruct", "re-ask", "replay", "progress", "warn", "result", "abort_confirm", "review"]) {
     assert.ok(kinds.has(k), `missing Turn kind: ${k}`);
   }
+});
+
+test("review gate holds the decision until confirm; stray confirms are ignored", () => {
+  let s = say(startRun("nsw-dl-clean"), "ready");
+  // Early confirm is a no-op: the gate only exists after the selfie keep.
+  s = signal(s, "review_confirmed");
+  assert.equal(s.stage, "awaiting_doc_front");
+  for (const ev of ["front_captured", "frames_done", "back_captured", "frames_done", "challenge_done", "selfie_captured"]) {
+    s = signal(s, ev);
+  }
+  assert.equal(s.stage, "awaiting_review");
+  assert.equal(s.last_turn.kind, "review");
+  assert.equal(s.decision, null, "no decision before confirm");
+  assert.equal(s.tier, null, "no tier before confirm");
+  // The pipeline must not run behind the gate: tier_done alone decides nothing.
+  const held = signal(s, "tier_done");
+  assert.equal(held.stage, "awaiting_review");
+  const confirmed = signal(s, "review_confirmed");
+  assert.equal(confirmed.stage, "comparing");
+  assert.ok(confirmed.decision !== null, "confirm runs the pipeline");
+  // Deny at the gate purges through the existing path.
+  const denied = say(s, "no, stop");
+  assert.equal(denied.stage, "idle");
+  assert.equal(denied.capturesPurged, true);
 });

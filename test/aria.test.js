@@ -267,6 +267,7 @@ test("API key sets stable: decided step carries the full report shape", async ()
     "frames_done",
     "challenge_done",
     "selfie_captured",
+    "review_confirmed",
     "tier_done",
   ]) {
     step = await post(`/api/session/${id}/signal`, { event });
@@ -315,6 +316,7 @@ test("API key sets stable: runs, run, providers", async () => {
     meta: "boolean",
     openrouter: "boolean",
     replicate: "boolean",
+    tts: "boolean",
   });
 });
 

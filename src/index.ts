@@ -32,6 +32,7 @@ import type { FlowState, Stage } from "./flow.js";
 import { buildMeasurements } from "./measurements.js";
 import { spendTotal } from "./meta-models.js";
 import { generatePanel } from "./panels.js";
+import type { PanelRow } from "./panels.js";
 import { configuredProviders, narrate, ocrCrop, segment, templateNarration, transcribeAudio } from "./providers.js";
 import type { OcrFields, ProviderName } from "./providers.js";
 import { redactRef } from "./redact.js";
@@ -453,6 +454,14 @@ const RETAKE_UTTERANCE = /^\s*(retake|take (it |that )?again)\s*\.?\s*$/i;
 export const LOCK_NOW_UTTERANCE =
   /^\s*(please\s+)?lock(\s+it(\s+now)?|\s+now(\s+please)?|\s+this)?(\s+please)?\s*[.!?]?\s*$/i;
 
+/**
+ * Review-gate voice path: bare "confirm"/"confirmed" on the review stage
+ * advances through the backend signal (affirm words route the same way
+ * via matchIntent). The gate checks deny first, so "don't confirm"
+ * purges through the existing deny path instead of advancing.
+ */
+const REVIEW_CONFIRM_WORDS = /\bconfirm\w*\b/i;
+
 /** Near-miss targets: the same closed pair phrasing, typo-tolerant. */
 const KEEP_TARGETS = ["keep", "keep it"];
 const RETAKE_TARGETS = ["retake", "take again", "take it again", "take that again"];
@@ -579,7 +588,63 @@ app.get("/api/run/:id", async (c) => {
   return c.json(evaluateFixture(id));
 });
 
-app.get("/api/providers", (c) => c.json(configuredProviders(processEnv())));
+app.get("/api/providers", async (c) =>
+  c.json({ ...configuredProviders(processEnv()), tts: await mmsUp(processEnv()) }),
+);
+
+/** Local MMS voice reachability for the speech-out flag (short fuse, never throws). */
+async function mmsUp(env: Record<string, string | undefined>): Promise<boolean> {
+  try {
+    const res = await fetch(`${env.VOICE_TTS_URL ?? "http://127.0.0.1:8765"}/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Raw bytes to base64 without Buffer (Workers-safe, chunked for the stack). */
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 8192) {
+    bin += String.fromCharCode(...Array.from(bytes.subarray(i, i + 8192)));
+  }
+  return btoa(bin);
+}
+
+/**
+ * Speech-out for one turn: text in, WAV data URL out, via the local Meta
+ * MMS server. Never a 4xx for synthesis itself — outage/empty read as
+ * audio: null so the client falls back to browser synthesis.
+ */
+app.post("/api/tts", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { text?: unknown };
+  const text = typeof body.text === "string" ? body.text.trim().slice(0, 500) : "";
+  if (!text) {
+    return c.json({ audio: null, provider: "local", skipped: ["local: empty text (nothing to speak)"] });
+  }
+  try {
+    const base = processEnv().VOICE_TTS_URL ?? "http://127.0.0.1:8765";
+    const res = await fetch(`${base}/speak`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const kind = res.headers.get("content-type") ?? "";
+    if (!res.ok || !kind.includes("audio/")) throw new Error(`tts ${res.status}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length < 1000) throw new Error("tts returned no audio");
+    return c.json({
+      audio: "data:audio/wav;base64," + bytesToBase64(bytes),
+      provider: "mms-local",
+      skipped: [],
+    });
+  } catch (error) {
+    return c.json({ audio: null, provider: "local", skipped: [`local: ${(error as Error).message}`] });
+  }
+});
 
 /** Standard step body: Turn payload plus its generated panel. */
 async function stepBody(
@@ -601,6 +666,15 @@ async function stepBody(
         skipped: ["model: suppressed repeat-episode"],
       }
     : await narrated(kind, text);
+  // The review turn's rows live on the session (flow is pure), so the
+  // served panel is regenerated with them — same fired turn, enriched.
+  const panel =
+    session.flow.stage === "awaiting_review" && kind === "review"
+      ? generatePanel("review", session.flow.stage, {
+          text,
+          rows: reviewRows(session),
+        })
+      : (turn?.panel ?? generatePanel(kind, session.flow.stage, { text }));
   return {
     sessionId: id,
     customerLink: `/result/${session.resultToken}`,
@@ -614,7 +688,7 @@ async function stepBody(
     captures: session.captures,
     capturesPurged: session.flow.capturesPurged,
     report: reportFor(session, { includeOcr: false }),
-    panel: turn?.panel ?? generatePanel(kind, session.flow.stage, { text }),
+    panel,
     pendingCapture: session.pendingCapture,
   };
 }
@@ -715,6 +789,32 @@ function ocrDetailsFor(session: Session): OcrDetails | null {
     front: front ? { source: frontSource, values: front } : null,
     back: back ? { source: backSource, values: back } : null,
   };
+}
+
+/**
+ * Review-gate detail rows: the same redacted OCR object the customer
+ * twins render (numbers redacted, the rest verbatim), flattened to
+ * label/value rows. Empty when nothing was read and no DL ground truth
+ * labels a side. This is the one deliberate exception to the audience
+ * split — the user must see their own details to confirm them.
+ */
+function reviewRows(session: Session): PanelRow[] {
+  const ocr = ocrDetailsFor(session);
+  if (!ocr) return [];
+  const rows: PanelRow[] = [];
+  if (ocr.front) {
+    rows.push(
+      { label: "Name", value: ocr.front.values.full_name },
+      { label: "Licence number", value: ocr.front.values.licence_number },
+      { label: "Date of birth", value: ocr.front.values.dob },
+      { label: "Address", value: ocr.front.values.address },
+      { label: "Expiry", value: ocr.front.values.expiry_date },
+    );
+  }
+  if (ocr.back) {
+    rows.push({ label: "Card number", value: ocr.back.values.card_number });
+  }
+  return rows;
 }
 
 /** Near-miss resolution echo: heard form, resolved choice, spoken echo. */
@@ -887,6 +987,26 @@ app.post("/api/session/:id/say", async (c) => {
     // every voice run degrades to fixture fallback.
     const voiceCrop = typeof body.crop === "string" ? body.crop : null;
     return c.json(await performLock(session, c.req.param("id"), utterance, voiceCrop));
+  }
+  // Review-gate voice path: affirm ("yes"/"ok"/...) or bare "confirm" on
+  // the review stage advances through the backend signal — speech never
+  // advances directly, mirroring the lock-now precedent above. Deny falls
+  // through to say() and purges; repeat replays the review turn.
+  if (session.pendingCapture === null && session.flow.stage === "awaiting_review") {
+    const reviewIntent = matchIntent(utterance);
+    if (
+      reviewIntent !== "deny" &&
+      (reviewIntent === "affirm" || REVIEW_CONFIRM_WORDS.test(utterance))
+    ) {
+      pushTurn(session, "you", utterance);
+      const confirmed = signal(session.flow, "review_confirmed");
+      session.flow = confirmed;
+      session.lastCoachText = null;
+      session.lastSample = null;
+      resetArmState(session);
+      pushTurn(session, "system", confirmed.last_turn?.text ?? "", confirmed.last_turn?.kind);
+      return c.json(await stepBody(session, c.req.param("id"), reviewIntent, true));
+    }
   }
   const before = session.flow.stage;
   const next = say(session.flow, utterance);
@@ -1600,6 +1720,7 @@ const PAGE = `<!doctype html>
   #panel .ptext, #dockZone .ptext, #progressDock .ptext { margin-bottom:.6rem; }
   #panel .pverdict, #dockZone .pverdict { font-size:.85rem; color:var(--ink2); margin:.4rem 0 .6rem; }
   #panel .confirm-card img.confirm-img, #dockZone .confirm-card img.confirm-img { width:100%; border-radius:6px; margin:.4rem 0; display:block; }
+  #panel .review-card img.review-img { width:100%; border-radius:6px; margin:.4rem 0; display:block; }
   #panel .standin-label, #dockZone .standin-label { font-size:.85rem; color:var(--ink2); border:1px dashed #2b4a5e;
                           border-radius:6px; padding:.6rem .8rem; margin:.4rem 0; }
   #spoken:focus, #panel .ptitle:focus, #dockZone .ptitle:focus { outline:2px solid #35507e; outline-offset:2px; }
@@ -1767,12 +1888,23 @@ let activeRecognition = null;
 let voiceGen = 0;
 let silenceParked = false;
 let pendingRef = null;
+let pairPostFails = 0;
 let latestCustomerLink = null;
 // Confirm-card review state: device-local snapshot (data URL, never posted),
 // server verdict caption, stand-in flag, and whether the card is on screen.
 let pendingSnapshot = null;
 let pendingVerdict = null;
 let pendingStandin = false;
+// Per-stage snapshots retained for the review gate: device-local like the
+// confirm preview (never posted). Overwritten on every lock; cleared when
+// the run is decided, purged, or restarted.
+let stageSnapshots = {};
+function retainSnapshot() {
+  if (captureStage === null) return;
+  if (pendingSnapshot !== null) stageSnapshots[captureStage] = { img: pendingSnapshot };
+  else if (pendingStandin === true) stageSnapshots[captureStage] = { standin: true };
+}
+function clearSnapshots() { stageSnapshots = {}; }
 let cardOpen = false;
 let confirmCardEl = null;
 let captureStream = null;
@@ -1818,9 +1950,10 @@ let asrPrimary = false;
 
 fetch('/api/providers').then(r => r.json()).then(p => {
   asrPrimary = p.meta === true;
+  ttsMms = p.tts === true;
   noteEl.textContent = 'Narration: ' + (p.meta ? 'Meta Model API' : p.openrouter ? 'OpenRouter' : 'local templates')
     + ' · Speech in: ' + (asrPrimary ? 'Muse Voice Transcribe' : SR ? 'browser recognition' : 'typed only')
-    + ' · Speech out: browser synthesis';
+    + ' · Speech out: ' + (ttsMms ? 'local MMS voice' : 'browser synthesis');
 });
 
 fetch('/api/runs').then(r => r.json()).then(runs => {
@@ -1895,14 +2028,54 @@ voiceToggle.addEventListener('click', () => {
   voiceToggle.textContent = voiceOverride === null ? 'Voice: auto' : voiceOverride ? 'Voice: on' : 'Voice: off';
   voiceToggle.setAttribute('aria-pressed', String(voiceOverride === true));
 });
+// MMS voice when the server reports the local TTS up; browser synthesis
+// otherwise. Set by the providers fetch alongside asrPrimary.
+let ttsMms = false;
+let ttsAudio = null;
+function stopTtsAudio() {
+  if (ttsAudio) {
+    try { ttsAudio.pause(); } catch { /* already stopped */ }
+    ttsAudio = null;
+  }
+}
 function speak(text) {
   return new Promise((resolve) => {
-    if (!window.speechSynthesis || !text) return resolve();
+    if (!text) return resolve();
     // SR arbitration: when a screen reader carries the live regions,
     // self-voicing stays silent unless the user forced it on.
     if (voiceOverride === false || (voiceOverride === null && srDetected === true)) {
       return resolve();
     }
+    if (ttsMms) return resolve(speakMms(text));
+    resolve(speakSynth(text));
+  });
+}
+/** One turn through the local MMS voice, falling back to synthesis on any miss. */
+function speakMms(text) {
+  return new Promise((resolve) => {
+    setOrb('speaking');
+    let done = false;
+    const finish = () => { if (!done) { done = true; stopTtsAudio(); setOrb('idle'); resolve(); } };
+    const fallback = () => { if (!done) speakSynth(text).then(finish); };
+    post('/api/tts', { text }).then((res) => {
+      const url = typeof res.audio === 'string' ? res.audio : '';
+      if (!url) return fallback();
+      const audio = new Audio(url);
+      ttsAudio = audio;
+      audio.onended = finish;
+      audio.onerror = () => fallback();
+      try {
+        const played = audio.play();
+        if (played && played.catch) played.catch(() => fallback());
+      } catch { fallback(); }
+    }).catch(() => fallback());
+    // A stuck fetch or silent file never wedges the run.
+    setTimeout(finish, Math.min(15000, 3000 + text.length * 60));
+  });
+}
+function speakSynth(text) {
+  return new Promise((resolve) => {
+    if (!window.speechSynthesis) return resolve();
     setOrb('speaking');
     let done = false;
     const finish = () => { if (!done) { done = true; setOrb('idle'); resolve(); } };
@@ -2013,15 +2186,19 @@ function renderPanel(panel, fallbackText) {
   }
   const card = document.createElement('div');
   const isConfirm = panel.primitive === 'retake-pair';
-  card.className = isConfirm ? 'card confirm-card' : 'card';
+  const isReview = panel.primitive === 'review-confirm';
+  card.className = isConfirm ? 'card confirm-card' : isReview ? 'card review-card' : 'card';
   if (isConfirm) {
     card.setAttribute('role', 'alertdialog');
     card.setAttribute('aria-label', panel.title || 'Confirm capture');
   }
-  const title = document.createElement(isConfirm ? 'h2' : 'div');
+  const title = document.createElement(isConfirm || isReview ? 'h2' : 'div');
   title.className = 'ptitle';
   if (isConfirm) {
     title.id = 'confirmHeading';
+    title.tabIndex = -1;
+  } else if (isReview) {
+    title.id = 'reviewHeading';
     title.tabIndex = -1;
   }
   title.textContent = panel.title || 'Update';
@@ -2050,13 +2227,46 @@ function renderPanel(panel, fallbackText) {
     }
     cardOpen = true;
   }
+  // Review gate: retained per-stage snapshots (decorative imgs, never
+  // uploaded) plus the server's redacted detail rows. textContent +
+  // createElement only: never innerHTML.
+  if (isReview) {
+    for (const stage of ['awaiting_doc_front', 'awaiting_doc_back', 'awaiting_challenge', 'awaiting_selfie']) {
+      const kept = stageSnapshots[stage];
+      if (!kept) continue;
+      if (kept.img) {
+        const img = document.createElement('img');
+        img.className = 'review-img';
+        img.src = kept.img;
+        img.alt = '';
+        card.append(img);
+      } else if (kept.standin === true) {
+        const standin = document.createElement('div');
+        standin.className = 'standin-label';
+        standin.textContent = 'Stand-in capture' + (fixtureId ? ' — ' + fixtureId : '');
+        card.append(standin);
+      }
+    }
+    if (Array.isArray(panel.rows) && panel.rows.length > 0) {
+      const dl = document.createElement('dl');
+      dl.className = 'rows';
+      for (const row of panel.rows) {
+        const dt = document.createElement('dt');
+        dt.textContent = row.label;
+        const dd = document.createElement('dd');
+        dd.textContent = row.value;             // textContent only: never innerHTML
+        dl.append(dt, dd);
+      }
+      card.append(dl);
+    }
+  }
   if (panel.text) {
     const twin = document.createElement('div');
     twin.className = 'ptext';
     twin.textContent = panel.text;            // textContent only: never innerHTML
     card.append(twin);
   }
-  if ((panel.primitive === 'choice-list' || panel.primitive === 'retake-pair') && Array.isArray(panel.choices)) {
+  if ((panel.primitive === 'choice-list' || panel.primitive === 'retake-pair' || panel.primitive === 'review-confirm') && Array.isArray(panel.choices)) {
     const row = document.createElement('div');
     row.className = 'row';
     // Keep/Retake accessible names carry the capture ("Keep document front").
@@ -2099,8 +2309,9 @@ function renderPanel(panel, fallbackText) {
   // local by design, and the label confused Meta-keyed runs. The server
   // field stays for shape-pinned API twins.)
   // The confirm card docks above the input with the frame's view-follows
-  // behavior; progress steps stick to the top of the page; every other
-  // panel renders in the middle region.
+  // behavior; progress steps stick to the top of the page; the review
+  // gate renders in the middle region with focus on its heading; every
+  // other panel renders in the middle region.
   if (isConfirm) {
     // The preview replaces the live frame: hide the viewfinder while the
     // confirm card is open. Retake/keep restores it via ensureCapture (or
@@ -2116,6 +2327,7 @@ function renderPanel(panel, fallbackText) {
     progressDock.append(card);
   } else {
     panelEl.append(card);
+    if (isReview) focusReviewHeading();
   }
 }
 
@@ -2123,6 +2335,7 @@ function onChoice(choice) {
   if (!choice || typeof choice !== 'object') return;
   if (choice.id === 'keep') return doKeep();
   if (choice.id === 'retake') return doRetake();
+  if (choice.id === 'confirm') return doConfirm();
   if (choice.id === 'describe') {
     listenEl.textContent = 'Type a short description of what you see, then press Send.';
     inputEl.focus({ preventScroll: true });
@@ -2350,6 +2563,7 @@ standinBtn.addEventListener('click', async () => {
     pendingSnapshot = null;
     pendingStandin = true;
     pendingVerdict = res.verdict || GENERIC_VERDICT[captureStage] || 'Captured.';
+    retainSnapshot();
     renderTranscript(res.transcript);
     renderPanel(res.panel, res.text);
     focusConfirmHeading();
@@ -2358,6 +2572,7 @@ standinBtn.addEventListener('click', async () => {
     if (sessionId !== standinSession) return;   // restart won the race: drop it
     setSpoken(res.text, false);
     await announceLock(res.text);
+    listenPair();
   } catch (err) {
     standinBtn.hidden = false;
     listenEl.textContent = postError(err);
@@ -2430,6 +2645,7 @@ async function onLocked(res, lockSession) {
   pendingVerdict = pendingSnapshot !== null
     ? (res.verdict || GENERIC_VERDICT[captureStage] || 'Captured.')
     : (GENERIC_VERDICT[captureStage] || 'Captured.');
+  retainSnapshot();
   renderTranscript(res.transcript);
   renderPanel(res.panel, res.text);
   focusConfirmHeading();
@@ -2438,6 +2654,7 @@ async function onLocked(res, lockSession) {
   if (sessionId !== lockSession) return;   // restart won the race: drop it
   setSpoken(res.text, false);
   await announceLock(res.text);
+  listenPair();
 }
 
 /**
@@ -2512,10 +2729,46 @@ function focusConfirmHeading() {
   }
 }
 
+/** Focus the review-gate heading on appearance (it is tabindex=-1). */
+function focusReviewHeading() {
+  const heading = document.getElementById('reviewHeading');
+  if (heading && heading.focus) {
+    try { heading.focus(); } catch { /* older browsers: card still renders */ }
+  }
+}
+
+/** Review gate: Confirm advances the run to the checks via the backend signal. */
+async function doConfirm() {
+  if (busy) return;
+  busy = true;
+  try {
+    const step = await post('/api/session/' + sessionId + '/signal', { event: 'review_confirmed' });
+    busy = false;
+    await drive(step);
+  } catch (err) {
+    busy = false;
+    listenEl.textContent = postError(err);
+  }
+}
+
 /** Retire the confirm card: drop the node, clear state, focus the spoken line. */
 function retireCard() {
   dropConfirmCard();
   cardOpen = false;
+  // Retire any pair-listen still running — its late result must never
+  // answer a closed pair (Start retires turn listeners the same way).
+  voiceGen += 1;
+  if (activeRecognition) {
+    try { activeRecognition.abort(); } catch { /* already gone */ }
+    activeRecognition = null;
+  }
+  stopRecording();
+  // The aborted listener's settle is retired by the voiceGen bump above,
+  // so it never resets its own UI: clear it here or 'Listening...' and
+  // the orb strand past the closed pair.
+  setOrb('idle');
+  listenEl.textContent = '';
+  pairPostFails = 0;
   pendingSnapshot = null;
   pendingVerdict = null;
   pendingStandin = false;
@@ -2730,6 +2983,7 @@ async function sampleTick() {
       // running, so a backed-up coaching utterance must not eat the lead
       // time. Safe — speak() resolves idempotently on interrupt.
       if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch { /* already clear */ } }
+      stopTtsAudio();
       await speak(BEAT_TWIN);
       return;
     }
@@ -2760,6 +3014,9 @@ async function drive(step) {
     listenEl.textContent = 'Something went wrong — press Start to begin again.';
     return;
   }
+  // Retained snapshots live for the review gate only: a decided or purged
+  // run drops them (a fresh Start clears them too).
+  if (step.report || step.stage === 'decided' || step.stage === 'idle') clearSnapshots();
   // A fresh lock via the "lock now" voice path lands on the same confirm
   // card as a tap: snapshot first, then verdict, then the question.
   const voiceLock = pendingRef == null && step.pendingCapture != null &&
@@ -2776,6 +3033,7 @@ async function drive(step) {
     pendingVerdict = pendingSnapshot !== null
       ? (step.verdict || GENERIC_VERDICT[step.stage] || 'Captured.')
       : (GENERIC_VERDICT[step.stage] || 'Captured.');
+    retainSnapshot();
     lockBtn.disabled = true;
     standinBtn.hidden = true;
   }
@@ -2795,7 +3053,15 @@ async function drive(step) {
   stageEl.textContent = step.stage;
   if (voiceLock !== true) setSpoken(step.text, step.stage === 'decided');
   renderTranscript(step.transcript);
-  if (!step.report) renderPanel(step.panel, step.text);
+  // The confirm card survives pair-holding turns: chatter, help, and repeat
+  // speak over the open card instead of replacing it, so tap Keep/Retake
+  // stay live until keep/retake/deny closes the pair; only a served pair
+  // panel re-renders the card.
+  if (!step.report) {
+    const pairHeld = step.pendingCapture != null && cardOpen === true;
+    const pairServed = step.panel != null && step.panel.primitive === 'retake-pair';
+    if (!pairHeld || pairServed) renderPanel(step.panel, step.text);
+  }
   if (voiceLock === true) {
     focusConfirmHeading();
     setSpoken(pendingVerdict, false);
@@ -2831,8 +3097,11 @@ async function drive(step) {
   if (CAPTURE_SIGNAL[step.stage]) {
     listenEl.textContent = '';
     // Behind an open pair the frame stays held — sampling resumes on
-    // keep/retake, never under the confirm card.
+    // keep/retake, never under the confirm card. A held-open pair (fresh
+    // voice lock, re-ask nudge, chatter) keeps its voice pass: the mic
+    // stays on the pair until keep/retake/deny closes it.
     if (step.pendingCapture == null) await ensureCapture(step.stage);
+    else listenPair();
     return;
   }
 
@@ -3074,11 +3343,16 @@ async function transcribeUtterance() {
   const rec = await recordUtterance();
   if (!rec) return null;
   if (rec.silence === true) return rec;
+  // Bound the upload: a stalled POST must fall through to on-device
+  // recognition, never freeze the turn. Same 15s ceiling as MMS speech-out.
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => { try { ctl.abort(); } catch { /* already settled */ } }, 15000) : null;
   try {
-    const res = await post('/api/session/' + sessionId + '/transcribe', { audio: rec });
+    const res = await post('/api/session/' + sessionId + '/transcribe', { audio: rec }, ctl ? ctl.signal : undefined);
     const text = typeof res.text === 'string' ? res.text.trim() : '';
     return text ? { text } : null;
   } catch { return null; }
+  finally { if (timer) clearTimeout(timer); }
 }
 
 // Speech-in router: Transcribe-first when keyed (primary ASR, spec §5),
@@ -3087,6 +3361,23 @@ async function transcribeUtterance() {
 function listen() {
   if (asrPrimary && !micParked && sessionId) return listenTranscribe();
   return listenSpeech();
+}
+
+/**
+ * Pair-listen: the single-purpose voice pass answering the open Keep/Retake
+ * pair. The capture command listener stays stopped behind the pair — this
+ * pass hears the answer instead, through the same speech-in router as any
+ * turn (Transcribe-first when keyed, on-device otherwise), posting the
+ * heard utterance to /say utterance-only via respond(). Tap and typed
+ * answers stay live throughout; a parked mic is never attempted.
+ */
+function listenPair() {
+  if (cardOpen !== true || pendingRef === null) return;
+  if (micParked) {
+    listenEl.textContent = micParked + ' Type your answer, then press Send.';
+    return;
+  }
+  listen();
 }
 
 async function listenTranscribe() {
@@ -3171,6 +3462,13 @@ function listenSpeech() {
         listenSpeech();
         return;
       }
+      // Open pair: silence re-listens through the pair pass (bounded by the
+      // 3× park above) instead of posting an empty turn — stillness holds
+      // the pair open for tap/type/voice alike.
+      if (cardOpen === true && pendingRef !== null) {
+        listenPair();
+        return;
+      }
       respond('');
       return;
     }
@@ -3229,9 +3527,13 @@ async function respond(utterance) {
   }
 
   // Voice "lock now" on a doc stage carries the locked crop like a tap —
-  // otherwise voice runs can never OCR and always fall back.
+  // otherwise voice runs can never OCR and always fall back. Pair
+  // utterances post utterance-only, never a crop: behind an open pair even
+  // a lock-now misfire only holds the pair (the server ignores crops
+  // there), so no pixels ride the answer.
   const sayBody = { utterance };
   if (
+    pendingRef === null &&
     LOCK_NOW_HEARD.test(utterance) &&
     (captureStage === 'awaiting_doc_front' || captureStage === 'awaiting_doc_back')
   ) {
@@ -3241,6 +3543,7 @@ async function respond(utterance) {
   try {
     const step = await post('/api/session/' + sessionId + '/say', sayBody);
     busy = false;
+    pairPostFails = 0;
     try {
       await drive(step);
     } catch {
@@ -3248,7 +3551,20 @@ async function respond(utterance) {
     }
   } catch (err) {
     busy = false;
-    listenEl.textContent = postError(err);
+    // A failed pair answer re-opens the mic (bounded): a network blip must
+    // not strand an open pair voice-dead. Expired sessions need Start, not
+    // retries; past the bound the pair yields to tap/type with a hint.
+    const pairOpen = cardOpen === true && pendingRef !== null;
+    const retryable = !err || err.status !== 404;
+    if (pairOpen && retryable && pairPostFails < 2) {
+      pairPostFails += 1;
+      listenEl.textContent = postError(err);
+      listenPair();
+    } else if (pairOpen && retryable) {
+      listenEl.textContent = postError(err) + ' Tap Keep or Retake, or type your answer.';
+    } else {
+      listenEl.textContent = postError(err);
+    }
   }
 }
 
@@ -3257,6 +3573,7 @@ startBtn.addEventListener('click', async () => {
   sessionId = null;
   pendingRef = null;
   clearReviewState();
+  clearSnapshots();
   // Fresh run, fresh mic: parked state dies here, the in-flight recognizer
   // is stopped, and its generation retires so a ghost result can never
   // speak into the new session.
@@ -3269,6 +3586,7 @@ startBtn.addEventListener('click', async () => {
   micParked = null;
   silenceParked = false;
   silentStreak = 0;
+  pairPostFails = 0;
   stopCapture();
   transcriptEl.replaceChildren();
   panelEl.replaceChildren();
