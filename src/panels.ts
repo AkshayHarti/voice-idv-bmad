@@ -11,6 +11,7 @@ export type PanelPrimitive =
   | "progress-steps"
   | "evidence-peek"
   | "retake-pair"
+  | "review-confirm"
   | "text";
 
 export type PanelProvider = "local templates" | "Spark";
@@ -73,7 +74,18 @@ export interface PanelData {
   limitations?: string[];
   steps?: PanelStep[];
   choices?: PanelChoice[];
+  rows?: PanelRow[];
 }
+
+/**
+ * Review-gate pair: Confirm advances the run to the checks (via the
+ * review_confirmed signal, never speech itself); Start over reads as
+ * deny and purges. Utterances are voice equivalents for the same gate.
+ */
+export const REVIEW_CHOICES: readonly PanelChoice[] = [
+  { id: "confirm", label: "Confirm", utterance: "yes, confirm" },
+  { id: "startover", label: "Start over", utterance: "stop, start over" },
+];
 
 /**
  * Limitations block (approved vocabulary only — negations). Mirrors the
@@ -91,6 +103,7 @@ const PRIMITIVES: readonly string[] = [
   "progress-steps",
   "evidence-peek",
   "retake-pair",
+  "review-confirm",
   "text",
 ];
 
@@ -112,10 +125,12 @@ function stageRank(stage: Stage): number {
       return 5;
     case "awaiting_selfie":
       return 6;
-    case "comparing":
+    case "awaiting_review":
       return 7;
-    case "decided":
+    case "comparing":
       return 8;
+    case "decided":
+      return 9;
   }
 }
 
@@ -258,6 +273,15 @@ export function isPanel(v: unknown): v is Panel {
       return (
         Array.isArray(v.rows) && v.rows.length > 0 && v.rows.every(isRow)
       );
+    case "review-confirm":
+      // Rows may be empty (nothing readable); the pair must always act.
+      return (
+        Array.isArray(v.rows) &&
+        v.rows.every(isRow) &&
+        Array.isArray(v.choices) &&
+        v.choices.length > 0 &&
+        v.choices.every(isChoice)
+      );
     case "evidence-peek":
       return Array.isArray(v.evidence) && v.evidence.every(isEvidence);
     case "text":
@@ -392,6 +416,16 @@ export function generatePanel(
         choices: data.choices ?? [
           { id: "startover", label: "Start over", utterance: "ready" },
         ],
+      };
+      break;
+    case "review":
+      panel = {
+        primitive: "review-confirm",
+        title: "Review",
+        text,
+        provider,
+        rows: data.rows ?? [],
+        choices: data.choices ?? [...REVIEW_CHOICES],
       };
       break;
     default:

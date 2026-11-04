@@ -37,6 +37,7 @@ const AUTO_SIGNAL = {
   reading_back: "frames_done",
   awaiting_challenge: "challenge_done",
   awaiting_selfie: "selfie_captured",
+  awaiting_review: "review_confirmed",
   comparing: "tier_done",
 };
 

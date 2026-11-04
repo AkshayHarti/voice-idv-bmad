@@ -19,6 +19,7 @@ const KINDS = [
   "warn",
   "result",
   "abort_confirm",
+  "review",
 ];
 
 test("every Turn kind binds exactly one primitive panel", () => {
@@ -31,6 +32,7 @@ test("every Turn kind binds exactly one primitive panel", () => {
     warn: "choice-list",
     result: "evidence-peek",
     abort_confirm: "choice-list",
+    review: "review-confirm",
   };
   for (const kind of KINDS) {
     const panel = generatePanel(kind, "awaiting_doc_front", { text: "hello" });
@@ -38,6 +40,35 @@ test("every Turn kind binds exactly one primitive panel", () => {
     assert.equal(panel.text, "hello", kind);
     assert.ok(isPanel(panel), `${kind} validates`);
   }
+});
+
+test("review binds rows plus the confirm pair; empty rows stay valid", () => {
+  const panel = generatePanel("review", "awaiting_review", {
+    text: "check",
+    rows: [{ label: "Name", value: "ALEX" }],
+  });
+  assert.equal(panel.primitive, "review-confirm");
+  assert.deepEqual(panel.rows, [{ label: "Name", value: "ALEX" }]);
+  assert.deepEqual(
+    panel.choices.map((c) => c.id),
+    ["confirm", "startover"],
+  );
+  assert.ok(isPanel(panel));
+  const empty = generatePanel("review", "awaiting_review", { text: "check" });
+  assert.deepEqual(empty.rows, []);
+  assert.ok(isPanel(empty), "unread details still validate");
+  assert.equal(
+    isPanel({
+      primitive: "review-confirm",
+      title: "t",
+      text: "x",
+      provider: "local templates",
+      rows: [],
+      choices: [],
+    }),
+    false,
+    "a review without an acting pair is malformed",
+  );
 });
 
 test("pending progress binds the retake pair with keep/retake", () => {

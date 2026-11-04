@@ -32,6 +32,7 @@ import type { FlowState, Stage } from "./flow.js";
 import { buildMeasurements } from "./measurements.js";
 import { spendTotal } from "./meta-models.js";
 import { generatePanel } from "./panels.js";
+import type { PanelRow } from "./panels.js";
 import { configuredProviders, narrate, ocrCrop, segment, templateNarration } from "./providers.js";
 import type { OcrFields, ProviderName } from "./providers.js";
 import { redactRef } from "./redact.js";
@@ -449,6 +450,14 @@ const RETAKE_UTTERANCE = /^\s*(retake|take (it |that )?again)\s*\.?\s*$/i;
 export const LOCK_NOW_UTTERANCE =
   /^\s*(please\s+)?lock(\s+it(\s+now)?|\s+now(\s+please)?|\s+this)?(\s+please)?\s*[.!?]?\s*$/i;
 
+/**
+ * Review-gate voice path: bare "confirm"/"confirmed" on the review stage
+ * advances through the backend signal (affirm words route the same way
+ * via matchIntent). The gate checks deny first, so "don't confirm"
+ * purges through the existing deny path instead of advancing.
+ */
+const REVIEW_CONFIRM_WORDS = /\bconfirm\w*\b/i;
+
 /** Near-miss targets: the same closed pair phrasing, typo-tolerant. */
 const KEEP_TARGETS = ["keep", "keep it"];
 const RETAKE_TARGETS = ["retake", "take again", "take it again", "take that again"];
@@ -597,6 +606,15 @@ async function stepBody(
         skipped: ["model: suppressed repeat-episode"],
       }
     : await narrated(kind, text);
+  // The review turn's rows live on the session (flow is pure), so the
+  // served panel is regenerated with them — same fired turn, enriched.
+  const panel =
+    session.flow.stage === "awaiting_review" && kind === "review"
+      ? generatePanel("review", session.flow.stage, {
+          text,
+          rows: reviewRows(session),
+        })
+      : (turn?.panel ?? generatePanel(kind, session.flow.stage, { text }));
   return {
     sessionId: id,
     customerLink: `/result/${session.resultToken}`,
@@ -610,7 +628,7 @@ async function stepBody(
     captures: session.captures,
     capturesPurged: session.flow.capturesPurged,
     report: reportFor(session, { includeOcr: false }),
-    panel: turn?.panel ?? generatePanel(kind, session.flow.stage, { text }),
+    panel,
     pendingCapture: session.pendingCapture,
   };
 }
@@ -711,6 +729,32 @@ function ocrDetailsFor(session: Session): OcrDetails | null {
     front: front ? { source: frontSource, values: front } : null,
     back: back ? { source: backSource, values: back } : null,
   };
+}
+
+/**
+ * Review-gate detail rows: the same redacted OCR object the customer
+ * twins render (numbers redacted, the rest verbatim), flattened to
+ * label/value rows. Empty when nothing was read and no DL ground truth
+ * labels a side. This is the one deliberate exception to the audience
+ * split — the user must see their own details to confirm them.
+ */
+function reviewRows(session: Session): PanelRow[] {
+  const ocr = ocrDetailsFor(session);
+  if (!ocr) return [];
+  const rows: PanelRow[] = [];
+  if (ocr.front) {
+    rows.push(
+      { label: "Name", value: ocr.front.values.full_name },
+      { label: "Licence number", value: ocr.front.values.licence_number },
+      { label: "Date of birth", value: ocr.front.values.dob },
+      { label: "Address", value: ocr.front.values.address },
+      { label: "Expiry", value: ocr.front.values.expiry_date },
+    );
+  }
+  if (ocr.back) {
+    rows.push({ label: "Card number", value: ocr.back.values.card_number });
+  }
+  return rows;
 }
 
 /** Near-miss resolution echo: heard form, resolved choice, spoken echo. */
@@ -883,6 +927,26 @@ app.post("/api/session/:id/say", async (c) => {
     // every voice run degrades to fixture fallback.
     const voiceCrop = typeof body.crop === "string" ? body.crop : null;
     return c.json(await performLock(session, c.req.param("id"), utterance, voiceCrop));
+  }
+  // Review-gate voice path: affirm ("yes"/"ok"/...) or bare "confirm" on
+  // the review stage advances through the backend signal — speech never
+  // advances directly, mirroring the lock-now precedent above. Deny falls
+  // through to say() and purges; repeat replays the review turn.
+  if (session.pendingCapture === null && session.flow.stage === "awaiting_review") {
+    const reviewIntent = matchIntent(utterance);
+    if (
+      reviewIntent !== "deny" &&
+      (reviewIntent === "affirm" || REVIEW_CONFIRM_WORDS.test(utterance))
+    ) {
+      pushTurn(session, "you", utterance);
+      const confirmed = signal(session.flow, "review_confirmed");
+      session.flow = confirmed;
+      session.lastCoachText = null;
+      session.lastSample = null;
+      resetArmState(session);
+      pushTurn(session, "system", confirmed.last_turn?.text ?? "", confirmed.last_turn?.kind);
+      return c.json(await stepBody(session, c.req.param("id"), reviewIntent, true));
+    }
   }
   const before = session.flow.stage;
   const next = say(session.flow, utterance);
@@ -1568,6 +1632,7 @@ const PAGE = `<!doctype html>
   #panel .ptext, #dockZone .ptext, #progressDock .ptext { margin-bottom:.6rem; }
   #panel .pverdict, #dockZone .pverdict { font-size:.85rem; color:var(--ink2); margin:.4rem 0 .6rem; }
   #panel .confirm-card img.confirm-img, #dockZone .confirm-card img.confirm-img { width:100%; border-radius:6px; margin:.4rem 0; display:block; }
+  #panel .review-card img.review-img { width:100%; border-radius:6px; margin:.4rem 0; display:block; }
   #panel .standin-label, #dockZone .standin-label { font-size:.85rem; color:var(--ink2); border:1px dashed #2b4a5e;
                           border-radius:6px; padding:.6rem .8rem; margin:.4rem 0; }
   #spoken:focus, #panel .ptitle:focus, #dockZone .ptitle:focus { outline:2px solid #35507e; outline-offset:2px; }
@@ -1741,6 +1806,16 @@ let latestCustomerLink = null;
 let pendingSnapshot = null;
 let pendingVerdict = null;
 let pendingStandin = false;
+// Per-stage snapshots retained for the review gate: device-local like the
+// confirm preview (never posted). Overwritten on every lock; cleared when
+// the run is decided, purged, or restarted.
+let stageSnapshots = {};
+function retainSnapshot() {
+  if (captureStage === null) return;
+  if (pendingSnapshot !== null) stageSnapshots[captureStage] = { img: pendingSnapshot };
+  else if (pendingStandin === true) stageSnapshots[captureStage] = { standin: true };
+}
+function clearSnapshots() { stageSnapshots = {}; }
 let cardOpen = false;
 let confirmCardEl = null;
 let captureStream = null;
@@ -1977,15 +2052,19 @@ function renderPanel(panel, fallbackText) {
   }
   const card = document.createElement('div');
   const isConfirm = panel.primitive === 'retake-pair';
-  card.className = isConfirm ? 'card confirm-card' : 'card';
+  const isReview = panel.primitive === 'review-confirm';
+  card.className = isConfirm ? 'card confirm-card' : isReview ? 'card review-card' : 'card';
   if (isConfirm) {
     card.setAttribute('role', 'alertdialog');
     card.setAttribute('aria-label', panel.title || 'Confirm capture');
   }
-  const title = document.createElement(isConfirm ? 'h2' : 'div');
+  const title = document.createElement(isConfirm || isReview ? 'h2' : 'div');
   title.className = 'ptitle';
   if (isConfirm) {
     title.id = 'confirmHeading';
+    title.tabIndex = -1;
+  } else if (isReview) {
+    title.id = 'reviewHeading';
     title.tabIndex = -1;
   }
   title.textContent = panel.title || 'Update';
@@ -2014,13 +2093,46 @@ function renderPanel(panel, fallbackText) {
     }
     cardOpen = true;
   }
+  // Review gate: retained per-stage snapshots (decorative imgs, never
+  // uploaded) plus the server's redacted detail rows. textContent +
+  // createElement only: never innerHTML.
+  if (isReview) {
+    for (const stage of ['awaiting_doc_front', 'awaiting_doc_back', 'awaiting_challenge', 'awaiting_selfie']) {
+      const kept = stageSnapshots[stage];
+      if (!kept) continue;
+      if (kept.img) {
+        const img = document.createElement('img');
+        img.className = 'review-img';
+        img.src = kept.img;
+        img.alt = '';
+        card.append(img);
+      } else if (kept.standin === true) {
+        const standin = document.createElement('div');
+        standin.className = 'standin-label';
+        standin.textContent = 'Stand-in capture' + (fixtureId ? ' — ' + fixtureId : '');
+        card.append(standin);
+      }
+    }
+    if (Array.isArray(panel.rows) && panel.rows.length > 0) {
+      const dl = document.createElement('dl');
+      dl.className = 'rows';
+      for (const row of panel.rows) {
+        const dt = document.createElement('dt');
+        dt.textContent = row.label;
+        const dd = document.createElement('dd');
+        dd.textContent = row.value;             // textContent only: never innerHTML
+        dl.append(dt, dd);
+      }
+      card.append(dl);
+    }
+  }
   if (panel.text) {
     const twin = document.createElement('div');
     twin.className = 'ptext';
     twin.textContent = panel.text;            // textContent only: never innerHTML
     card.append(twin);
   }
-  if ((panel.primitive === 'choice-list' || panel.primitive === 'retake-pair') && Array.isArray(panel.choices)) {
+  if ((panel.primitive === 'choice-list' || panel.primitive === 'retake-pair' || panel.primitive === 'review-confirm') && Array.isArray(panel.choices)) {
     const row = document.createElement('div');
     row.className = 'row';
     // Keep/Retake accessible names carry the capture ("Keep document front").
@@ -2063,8 +2175,9 @@ function renderPanel(panel, fallbackText) {
   // local by design, and the label confused Meta-keyed runs. The server
   // field stays for shape-pinned API twins.)
   // The confirm card docks above the input with the frame's view-follows
-  // behavior; progress steps stick to the top of the page; every other
-  // panel renders in the middle region.
+  // behavior; progress steps stick to the top of the page; the review
+  // gate renders in the middle region with focus on its heading; every
+  // other panel renders in the middle region.
   if (isConfirm) {
     // The preview replaces the live frame: hide the viewfinder while the
     // confirm card is open. Retake/keep restores it via ensureCapture (or
@@ -2080,6 +2193,7 @@ function renderPanel(panel, fallbackText) {
     progressDock.append(card);
   } else {
     panelEl.append(card);
+    if (isReview) focusReviewHeading();
   }
 }
 
@@ -2087,6 +2201,7 @@ function onChoice(choice) {
   if (!choice || typeof choice !== 'object') return;
   if (choice.id === 'keep') return doKeep();
   if (choice.id === 'retake') return doRetake();
+  if (choice.id === 'confirm') return doConfirm();
   if (choice.id === 'describe') {
     listenEl.textContent = 'Type a short description of what you see, then press Send.';
     inputEl.focus({ preventScroll: true });
@@ -2314,6 +2429,7 @@ standinBtn.addEventListener('click', async () => {
     pendingSnapshot = null;
     pendingStandin = true;
     pendingVerdict = res.verdict || GENERIC_VERDICT[captureStage] || 'Captured.';
+    retainSnapshot();
     renderTranscript(res.transcript);
     renderPanel(res.panel, res.text);
     focusConfirmHeading();
@@ -2394,6 +2510,7 @@ async function onLocked(res, lockSession) {
   pendingVerdict = pendingSnapshot !== null
     ? (res.verdict || GENERIC_VERDICT[captureStage] || 'Captured.')
     : (GENERIC_VERDICT[captureStage] || 'Captured.');
+  retainSnapshot();
   renderTranscript(res.transcript);
   renderPanel(res.panel, res.text);
   focusConfirmHeading();
@@ -2473,6 +2590,28 @@ function focusConfirmHeading() {
   const heading = document.getElementById('confirmHeading');
   if (heading && heading.focus) {
     try { heading.focus(); } catch { /* older browsers: card still renders */ }
+  }
+}
+
+/** Focus the review-gate heading on appearance (it is tabindex=-1). */
+function focusReviewHeading() {
+  const heading = document.getElementById('reviewHeading');
+  if (heading && heading.focus) {
+    try { heading.focus(); } catch { /* older browsers: card still renders */ }
+  }
+}
+
+/** Review gate: Confirm advances the run to the checks via the backend signal. */
+async function doConfirm() {
+  if (busy) return;
+  busy = true;
+  try {
+    const step = await post('/api/session/' + sessionId + '/signal', { event: 'review_confirmed' });
+    busy = false;
+    await drive(step);
+  } catch (err) {
+    busy = false;
+    listenEl.textContent = postError(err);
   }
 }
 
@@ -2724,6 +2863,9 @@ async function drive(step) {
     listenEl.textContent = 'Something went wrong — press Start to begin again.';
     return;
   }
+  // Retained snapshots live for the review gate only: a decided or purged
+  // run drops them (a fresh Start clears them too).
+  if (step.report || step.stage === 'decided' || step.stage === 'idle') clearSnapshots();
   // A fresh lock via the "lock now" voice path lands on the same confirm
   // card as a tap: snapshot first, then verdict, then the question.
   const voiceLock = pendingRef == null && step.pendingCapture != null &&
@@ -2740,6 +2882,7 @@ async function drive(step) {
     pendingVerdict = pendingSnapshot !== null
       ? (step.verdict || GENERIC_VERDICT[step.stage] || 'Captured.')
       : (GENERIC_VERDICT[step.stage] || 'Captured.');
+    retainSnapshot();
     lockBtn.disabled = true;
     standinBtn.hidden = true;
   }
@@ -3028,6 +3171,7 @@ startBtn.addEventListener('click', async () => {
   sessionId = null;
   pendingRef = null;
   clearReviewState();
+  clearSnapshots();
   // Fresh run, fresh mic: parked state dies here, the in-flight recognizer
   // is stopped, and its generation retires so a ghost result can never
   // speak into the new session.

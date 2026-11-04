@@ -7,7 +7,7 @@
 // A DL run whose back is missing parks at `awaiting_doc_back` and never
 // reaches the check/tier pipeline (fail-closed per Task 4 ruling).
 // Consumes `runChecks`, `decide` (Task 3), `verifyDVS` (Task 4),
-// `tier` (Task 4). Produces `startRun`, `say`, `signal`, 10-stage type.
+// `tier` (Task 4). Produces `startRun`, `say`, `signal`, 11-stage type.
 // Goal 2: every fired Turn carries its generated panel (Turn-bound UI);
 // unknown utterances in capture stages acknowledge-and-hold so the
 // typed-description alternative path functions without client-driven
@@ -32,6 +32,7 @@ export type Stage =
   | "reading_back"
   | "awaiting_challenge"
   | "awaiting_selfie"
+  | "awaiting_review"
   | "comparing"
   | "decided";
 
@@ -45,7 +46,7 @@ export type Intent =
   | "wait"
   | "unknown";
 
-/** Closed system Turns (8). Template-first; every Turn is barge-inable. */
+/** Closed system Turns (9). Template-first; every Turn is barge-inable. */
 export type TurnKind =
   | "consent"
   | "instruct"
@@ -54,7 +55,8 @@ export type TurnKind =
   | "progress"
   | "warn"
   | "result"
-  | "abort_confirm";
+  | "abort_confirm"
+  | "review";
 
 export interface Turn {
   kind: TurnKind;
@@ -389,6 +391,24 @@ function isPassport(s: FlowState): boolean {
   }
 }
 
+/**
+ * Review gate: every capture is kept, nothing is checked yet. The user
+ * confirms the captures + details (review_confirmed signal) before the
+ * pipeline runs; deny purges through the existing say() path. Detail
+ * rows are attached server-side in stepBody (flow is pure; OCR lives
+ * on the session), so the flow-built panel carries rows: [].
+ */
+export const REVIEW_TEXT =
+  "Here's what I captured — check the details, then say yes or tap Confirm to run the checks.";
+
+function enterReview(s: FlowState): FlowState {
+  return {
+    ...s,
+    stage: "awaiting_review",
+    last_turn: withPanel({ kind: "review", text: REVIEW_TEXT }, "awaiting_review"),
+  };
+}
+
 /** Run the deterministic pipeline on entering `comparing`. */
 function enterComparing(s: FlowState): FlowState {
   const m = buildMeasurements(s.fixture);
@@ -564,7 +584,10 @@ export function signal(s: FlowState, ev: string): FlowState {
       }
       return s;
     case "awaiting_selfie":
-      if (ev === "selfie_captured") return enterComparing(s);
+      if (ev === "selfie_captured") return enterReview(s);
+      return s;
+    case "awaiting_review":
+      if (ev === "review_confirmed") return enterComparing(s);
       return s;
     case "comparing":
       if (ev === "tier_done" || ev === "report_ready") {

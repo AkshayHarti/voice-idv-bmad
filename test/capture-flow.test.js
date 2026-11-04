@@ -112,11 +112,57 @@ test("lock/keep run completes all four captures and matches the report", async (
   const selfieLock = await lock(id);
   assert.match(selfieLock.text, /Selfie captured/);
   step = await keep(id);
+  // Review gate: every capture kept, nothing checked yet — the panel
+  // carries redacted detail rows plus the confirm pair.
+  assert.equal(step.stage, "awaiting_review");
+  assert.equal(step.turn, "review");
+  assert.equal(step.panel.primitive, "review-confirm");
+  assert.ok(step.panel.rows.length > 0, "review carries detail rows");
+  assert.deepEqual(
+    step.panel.choices.map((c) => c.id),
+    ["confirm", "startover"],
+  );
+  assert.equal(step.report, null, "no report before confirm");
+  step = await fire(id, "review_confirmed");
   assert.equal(step.stage, "comparing");
   step = await fire(id, "tier_done");
   assert.equal(step.stage, "decided");
   assert.equal(step.report.decision, evaluateFixture("nsw-dl-clean").decision);
   assert.equal(step.captures.length, 4);
+});
+
+test("review gate voice paths: yes/confirm advance, deny purges, strays hold", async () => {
+  async function toReview(fixture) {
+    const id = await start(fixture);
+    await driveTo(id, "awaiting_selfie");
+    await lock(id);
+    const kept = await keep(id);
+    assert.equal(kept.stage, "awaiting_review");
+    return id;
+  }
+  // Stray confirm before the gate exists holds the stage.
+  const early = await start("nsw-dl-clean");
+  await say(early, "I consent");
+  const stray = await fire(early, "review_confirmed");
+  assert.equal(stray.stage, "awaiting_doc_front");
+  assert.equal(stray.advanced, false);
+
+  for (const utterance of ["yes", "confirm", "ok"]) {
+    const id = await toReview("aus-passport-clean");
+    const confirmed = await say(id, utterance);
+    assert.equal(confirmed.stage, "comparing", utterance);
+    assert.equal(confirmed.advanced, true, utterance);
+  }
+  // Deny at the gate purges through the existing path.
+  const denied = await toReview("aus-passport-clean");
+  const purged = await say(denied, "stop, start over");
+  assert.equal(purged.stage, "idle");
+  assert.equal(purged.capturesPurged, true);
+  assert.deepEqual(purged.captures, []);
+  // Negated confirm still reads as deny, never an advance.
+  const negated = await toReview("aus-passport-clean");
+  const noConfirm = await say(negated, "don't confirm");
+  assert.equal(noConfirm.stage, "idle");
 });
 
 test("retake discards the lock and holds the stage for another try", async () => {
@@ -142,7 +188,7 @@ test("retake with nothing pending 409s and never clobbers the verdict", async ()
   assert.equal(empty.body.error, "nothing_to_retake");
 
   // Drive to decided, then confirm the 409 leaves the verdict Turn alone.
-  for (const event of ["front_captured", "frames_done", "challenge_done", "selfie_captured", "tier_done"]) {
+  for (const event of ["front_captured", "frames_done", "challenge_done", "selfie_captured", "review_confirmed", "tier_done"]) {
     await fire(id, event);
   }
   const before = await fire(id, "noop");
@@ -281,7 +327,7 @@ test("decided panel evidence deep-equals failedFirst on a mixed fixture", async 
   const id = await start("aus-passport-tampered-digit");
   await say(id, "I consent");
   let step;
-  for (const event of ["front_captured", "frames_done", "challenge_done", "selfie_captured", "tier_done"]) {
+  for (const event of ["front_captured", "frames_done", "challenge_done", "selfie_captured", "review_confirmed", "tier_done"]) {
     step = await fire(id, event);
   }
   assert.equal(step.stage, "decided");
@@ -297,7 +343,7 @@ test("telemetry noise never perturbs the decision core", async () => {
   for (const fixture of ["aus-passport-clean", "aus-passport-tampered-digit"]) {
     const id = await start(fixture);
     await say(id, "I consent");
-    for (const event of ["front_captured", "frames_done", "challenge_done", "selfie_captured", "tier_done"]) {
+    for (const event of ["front_captured", "frames_done", "challenge_done", "selfie_captured", "review_confirmed", "tier_done"]) {
       await sample(id, {});
       await sample(id, { glare: 0.9 });
       await sample(id, {});
