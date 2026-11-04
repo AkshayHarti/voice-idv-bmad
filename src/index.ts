@@ -1548,6 +1548,7 @@ const PAGE = `<!doctype html>
   #captureWrap[hidden] { display:none; }
   #dockZone { margin:1rem 0; }
   #dockZone:empty { display:none; }
+  #composerDock { position:sticky; bottom:0; z-index:30; background:#0B0E13; padding:.5rem 0 0; }
   #captureFrame { position:relative; border-radius:16px; overflow:hidden;
                   background:#000; aspect-ratio:4/3; max-height:60vh; }
   #viewfinder { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
@@ -1647,12 +1648,14 @@ const PAGE = `<!doctype html>
 
 <div id="transcript" aria-live="polite"></div>
 <div id="listen" aria-live="polite"></div>
+<div id="composerDock">
 <div id="dockZone"></div>
 
 <form id="typed">
   <input id="utterance" autocomplete="off" placeholder="Or type what you would say" aria-label="Typed input">
   <button type="submit">Send</button>
 </form>
+</div>
 
 <div id="decision"></div>
 <div id="customerLink"></div>

@@ -279,3 +279,14 @@ test("progress steps stick to the top of the page while the run scrolls", async 
   assert.ok(html.includes("progressDock.append(card)"), "progress-steps cards render in the top dock");
   assert.ok(html.includes("#progressDock ol.steps"), "step list keeps its chrome in the dock");
 });
+
+test("capture frame sticks to the dock above the input while chat scrolls", async () => {
+  const html = await getPage();
+  assert.ok(html.includes('id="composerDock"'), "composer dock wraps dock zone and input");
+  assert.ok(
+    html.indexOf('id="composerDock"') < html.indexOf('id="dockZone"') &&
+    html.indexOf('id="dockZone"') < html.indexOf('id="typed"'),
+    "composer keeps the dock above the typed input"
+  );
+  assert.ok(html.includes("#composerDock { position:sticky; bottom:0;"), "composer pins frame and input to the viewport bottom");
+});
