@@ -419,6 +419,26 @@ test("pair-holding turns speak over the card instead of replacing it", async () 
   assert.ok(html.includes("!pairHeld || pairServed"), "only a served pair panel re-renders the card");
 });
 
+test("failed pair answer re-opens the mic, then yields to tap/type", async () => {
+  const html = await getPage();
+  const respond = html.slice(html.indexOf("async function respond"), html.indexOf("startBtn.addEventListener"));
+  assert.ok(respond.includes("pairPostFails"), "pair failures counted separately from the silence streak");
+  assert.ok(respond.includes("err.status !== 404"), "expired sessions need Start, not retries");
+  assert.ok(respond.indexOf("listenPair();") !== -1, "failed pair answer re-arms the mic");
+  assert.ok(respond.indexOf("pairPostFails < 2") !== -1, "re-arm is bounded");
+  assert.ok(respond.includes("Tap Keep or Retake, or type your answer."), "bound expiry names the tap/type fallback");
+  const retire = html.slice(html.indexOf("function retireCard"), html.indexOf("function clearReviewState"));
+  assert.ok(retire.includes("pairPostFails = 0"), "pair close resets the failure count");
+});
+
+test("stalled transcribe upload falls through instead of freezing the turn", async () => {
+  const html = await getPage();
+  const up = html.slice(html.indexOf("async function transcribeUtterance"), html.indexOf("async function listenTranscribe"));
+  assert.ok(up.includes("AbortController"), "upload carries an abort signal");
+  assert.ok(up.includes("15000"), "upload bounded at fifteen seconds");
+  assert.ok(up.includes("clearTimeout(timer)"), "settled uploads release the timer");
+});
+
 test("captured preview replaces the live frame until keep/retake resolves", async () => {
   const html = await getPage();
   const hideAt = html.indexOf("captureWrap.hidden = true");

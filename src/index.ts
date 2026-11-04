@@ -1888,6 +1888,7 @@ let activeRecognition = null;
 let voiceGen = 0;
 let silenceParked = false;
 let pendingRef = null;
+let pairPostFails = 0;
 let latestCustomerLink = null;
 // Confirm-card review state: device-local snapshot (data URL, never posted),
 // server verdict caption, stand-in flag, and whether the card is on screen.
@@ -2767,6 +2768,7 @@ function retireCard() {
   // the orb strand past the closed pair.
   setOrb('idle');
   listenEl.textContent = '';
+  pairPostFails = 0;
   pendingSnapshot = null;
   pendingVerdict = null;
   pendingStandin = false;
@@ -3341,11 +3343,16 @@ async function transcribeUtterance() {
   const rec = await recordUtterance();
   if (!rec) return null;
   if (rec.silence === true) return rec;
+  // Bound the upload: a stalled POST must fall through to on-device
+  // recognition, never freeze the turn. Same 15s ceiling as MMS speech-out.
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => { try { ctl.abort(); } catch { /* already settled */ } }, 15000) : null;
   try {
-    const res = await post('/api/session/' + sessionId + '/transcribe', { audio: rec });
+    const res = await post('/api/session/' + sessionId + '/transcribe', { audio: rec }, ctl ? ctl.signal : undefined);
     const text = typeof res.text === 'string' ? res.text.trim() : '';
     return text ? { text } : null;
   } catch { return null; }
+  finally { if (timer) clearTimeout(timer); }
 }
 
 // Speech-in router: Transcribe-first when keyed (primary ASR, spec §5),
@@ -3536,6 +3543,7 @@ async function respond(utterance) {
   try {
     const step = await post('/api/session/' + sessionId + '/say', sayBody);
     busy = false;
+    pairPostFails = 0;
     try {
       await drive(step);
     } catch {
@@ -3543,7 +3551,20 @@ async function respond(utterance) {
     }
   } catch (err) {
     busy = false;
-    listenEl.textContent = postError(err);
+    // A failed pair answer re-opens the mic (bounded): a network blip must
+    // not strand an open pair voice-dead. Expired sessions need Start, not
+    // retries; past the bound the pair yields to tap/type with a hint.
+    const pairOpen = cardOpen === true && pendingRef !== null;
+    const retryable = !err || err.status !== 404;
+    if (pairOpen && retryable && pairPostFails < 2) {
+      pairPostFails += 1;
+      listenEl.textContent = postError(err);
+      listenPair();
+    } else if (pairOpen && retryable) {
+      listenEl.textContent = postError(err) + ' Tap Keep or Retake, or type your answer.';
+    } else {
+      listenEl.textContent = postError(err);
+    }
   }
 }
 
@@ -3565,6 +3586,7 @@ startBtn.addEventListener('click', async () => {
   micParked = null;
   silenceParked = false;
   silentStreak = 0;
+  pairPostFails = 0;
   stopCapture();
   transcriptEl.replaceChildren();
   panelEl.replaceChildren();
