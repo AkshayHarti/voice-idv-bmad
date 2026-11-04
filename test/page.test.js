@@ -266,3 +266,41 @@ test("near-miss echo sounds before the resolved turn", async () => {
   assert.ok(html.includes("step.echo"), "echo carried on the step");
   assert.ok(html.includes("speak(step.echo)"), "echo spoken first");
 });
+
+test("progress steps stick to the top of the page while the run scrolls", async () => {
+  const html = await getPage();
+  assert.ok(html.includes('id="progressDock"'), "progress dock slot at the top");
+  assert.ok(
+    html.indexOf('id="progressDock"') < html.indexOf('id="fixtures"'),
+    "progress dock lands above the run controls"
+  );
+  assert.ok(html.includes("#progressDock { position:sticky; top:0;"), "progress dock sticks to the viewport top");
+  assert.ok(html.includes("progressDock.replaceChildren()"), "progress dock single-replaces with the panel");
+  assert.ok(html.includes("progressDock.append(card)"), "progress-steps cards render in the top dock");
+  assert.ok(html.includes("#progressDock ol.steps"), "step list keeps its chrome in the dock");
+});
+
+test("capture frame sticks to the dock above the input while chat scrolls", async () => {
+  const html = await getPage();
+  assert.ok(html.includes('id="composerDock"'), "composer dock wraps dock zone and input");
+  assert.ok(
+    html.indexOf('id="composerDock"') < html.indexOf('id="dockZone"') &&
+    html.indexOf('id="dockZone"') < html.indexOf('id="typed"'),
+    "composer keeps the dock above the typed input"
+  );
+  assert.ok(html.includes("#composerDock { position:sticky; bottom:0;"), "composer pins frame and input to the viewport bottom");
+});
+
+test("captured preview replaces the live frame until keep/retake resolves", async () => {
+  const html = await getPage();
+  const hideAt = html.indexOf("captureWrap.hidden = true");
+  assert.ok(
+    hideAt > html.indexOf("function renderPanel") && hideAt < html.indexOf("dockZone.append(card)"),
+    "confirm card hides the live frame before docking"
+  );
+  assert.ok(
+    html.indexOf("captureWrap.hidden = false") < html.indexOf("drawGuides(captureStage, false)"),
+    "retake unhides the frame before guides redraw"
+  );
+  assert.ok(html.includes("drawGuides(stage, false)"), "resumed capture redraws guidance guides");
+});
