@@ -282,7 +282,8 @@ test("retake drops pending fields; deny purges kept fields", async () => {
     const did = (await post("/api/session", { fixtureId: "nsw-dl-clean" })).body.sessionId;
     await post(`/api/session/${did}/say`, { utterance: "I consent" });
     await post(`/api/session/${did}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
-    await post(`/api/session/${did}/keep`, {});
+    const kept = await post(`/api/session/${did}/keep`, {});
+    const revokedLink = kept.body.customerLink;
     const denied = await post(`/api/session/${did}/say`, { utterance: "I do not consent" });
     assert.deepEqual(denied.body.captures, []);
     await post(`/api/session/${did}/say`, { utterance: "I consent" });
@@ -291,9 +292,12 @@ test("retake drops pending fields; deny purges kept fields", async () => {
       const event = AUTO_SIGNAL[again.body.stage];
       again = await post(`/api/session/${did}/signal`, { event });
     }
-    // The denied token stays dead after restart: purged views never resurrect.
-    const dead = await app.request(again.body.customerLink.replace("/result/", "/api/result/"));
+    // Revoked token stays dead; the restarted run mints a live link.
+    assert.notEqual(again.body.customerLink, revokedLink);
+    const dead = await app.request(revokedLink.replace("/result/", "/api/result/"));
     assert.equal(dead.status, 404);
+    const revived = await getTwinOcr(again.body.customerLink);
+    assert.equal(revived.front.source, "fixture-fallback");
   });
 });
 
@@ -588,7 +592,8 @@ test("deny during the OCR await abandons the lock; nothing resurrects", async ()
   await withKeyedMeta(async () => {
     const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
     const id = created.body.sessionId;
-    await post(`/api/session/${id}/say`, { utterance: "I consent" });
+    const consented = await post(`/api/session/${id}/say`, { utterance: "I consent" });
+    const revokedLink = consented.body.customerLink;
     const lockP = post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
     for (let i = 0; i < 100 && !entered; i++) {
       await new Promise((r) => setTimeout(r, 20));
@@ -600,8 +605,8 @@ test("deny during the OCR await abandons the lock; nothing resurrects", async ()
     const abandoned = await lockP;
     assert.equal(abandoned.body.stage, "idle", "stale lock abandoned, not landed");
     assert.equal(abandoned.body.pendingCapture, null);
-    // The stale resolve resurrects nothing: the denied token stays dead and
-    // the fresh run decides cleanly with no servable OCR view.
+    // The stale resolve resurrects nothing: revoked token dead, fresh run
+    // decides cleanly on a live link showing only its own fallback.
     await post(`/api/session/${id}/say`, { utterance: "I consent" });
     await post(`/api/session/${id}/lock`, {});
     await post(`/api/session/${id}/keep`, {});
@@ -611,8 +616,11 @@ test("deny during the OCR await abandons the lock; nothing resurrects", async ()
       step = await post(`/api/session/${id}/signal`, { event });
     }
     assert.equal(step.body.stage, "decided");
-    const dead = await app.request(step.body.customerLink.replace("/result/", "/api/result/"));
+    assert.notEqual(step.body.customerLink, revokedLink);
+    const dead = await app.request(revokedLink.replace("/result/", "/api/result/"));
     assert.equal(dead.status, 404);
+    const revived = await getTwinOcr(step.body.customerLink);
+    assert.equal(revived.front.source, "fixture-fallback");
   }, {
     wonderImpl: async (url, opts, body) => {
       entered = true;

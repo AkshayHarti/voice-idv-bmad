@@ -272,7 +272,7 @@ function zeroFaultCounts(): Record<FaultKey, number> {
  * never inherits a streak toward an instant warn. Fraud flags
  * (moireFlags) are kept: Rev 2 §8 purges captures and crops, not flags.
  */
-function purgeCaptures(session: Session): void {
+function purgeCaptures(session: Session, id: string): void {
   session.captures = [];
   session.pendingCapture = null;
   session.pendingVerdict = null;
@@ -281,6 +281,9 @@ function purgeCaptures(session: Session): void {
   session.ocrAttempts = 0;
   session.ocrAttemptsStage = null;
   resultTokens.delete(session.resultToken);
+  // Re-mint immediately: the revoked token stays dead, but the restarted run
+  // gets a live link instead of deciding with a 404 receipt.
+  session.resultToken = mintResultToken(id);
   session.faultCounts = zeroFaultCounts();
   session.lastCoachText = null;
   session.lastSample = null;
@@ -885,7 +888,7 @@ app.post("/api/session/:id/say", async (c) => {
   const next = say(session.flow, utterance);
   session.flow = next;
   // Full deny purge: captures are deleted on deny/revoke, not flagged.
-  if (next.last_intent === "deny") purgeCaptures(session);
+  if (next.last_intent === "deny") purgeCaptures(session, c.req.param("id"));
   // Voice veto: "wait" cancels the arm (a fresh clean run must re-arm)
   // and breaks the veto streak (a deliberate hold is not instability)
   // while coaching resumes underneath.

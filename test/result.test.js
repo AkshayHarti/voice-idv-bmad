@@ -150,6 +150,11 @@ test("deny revokes the customer link", async () => {
   await post(`/api/session/${created.sessionId}/say`, { utterance: "I do not consent" });
   assert.equal((await app.request(link)).status, 404);
   assert.equal((await app.request(link.replace("/result/", "/api/result/"))).status, 404);
+  // The restarted run mints a fresh live link; the revoked one stays dead.
+  await post(`/api/session/${created.sessionId}/say`, { utterance: "I consent" });
+  const again = await driveToDecided(created.sessionId);
+  assert.notEqual(again.customerLink, link);
+  assert.equal((await app.request(again.customerLink)).status, 200);
 });
 
 test("customer view: valid token renders the run's full evidence", async () => {
