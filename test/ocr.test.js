@@ -619,6 +619,47 @@ test("re-tap during the OCR await collects a renderable pair card", async () => 
   assert.equal(wonderCalls, 1, "racing re-tap burns no second OCR call");
 });
 
+test("voice holds during the OCR await collect the same renderable pair card", async () => {
+  let entered = false;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const seen = [];
+  await withKeyedMeta(async () => {
+    const created = await post("/api/session", { fixtureId: "nsw-dl-clean" });
+    const id = created.body.sessionId;
+    await post(`/api/session/${id}/say`, { utterance: "I consent" });
+    const lockP = post(`/api/session/${id}/lock`, { crop: "data:image/jpeg;base64," + PIXELS });
+    for (let i = 0; i < 100 && !entered; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(entered, "OCR await entered before voice holds");
+    // Voice mid-await: the card never landed client-side, so the hold must
+    // synthesize the full pair presentation — panel, text, turn, verdict.
+    const held = await post(`/api/session/${id}/say`, { utterance: "lock now" });
+    assert.equal(held.body.panel.primitive, "retake-pair", "pair card renderable mid-await");
+    assert.match(held.body.text, /Keep it, or retake/);
+    assert.equal(held.body.turn, "progress");
+    assert.ok(held.body.pendingCapture, "held ref present");
+    assert.ok(held.body.verdict, "held verdict recomputed, never null");
+    // The negated-retake twin serves the same card for the same open pair.
+    const negated = await post(`/api/session/${id}/say`, { utterance: "don't retake" });
+    assert.equal(negated.body.panel.primitive, "retake-pair");
+    assert.equal(negated.body.pendingCapture, held.body.pendingCapture, "one ref across holds");
+    release();
+    const first = await lockP;
+    assert.equal(first.body.pendingCapture, held.body.pendingCapture, "one ref, no double-mint");
+  }, {
+    seen,
+    wonderImpl: async () => {
+      entered = true;
+      await gate;
+      return { ok: true, json: async () => ({ output_text: FRONT_JSON }) };
+    },
+  });
+  const wonderCalls = seen.filter((m) => m === META_MODELS.wonder).length;
+  assert.equal(wonderCalls, 1, "racing voice holds burn no extra OCR call");
+});
+
 test("deny during the OCR await abandons the lock; nothing resurrects", async () => {
   let entered = false;
   let release;

@@ -821,7 +821,7 @@ app.post("/api/session/:id/say", async (c) => {
     // splits "wait" (nudge) from "hold on" (hold-off turn).
     if (LOCK_NOW_UTTERANCE.test(utterance) || matchIntent(utterance) === "wait") {
       pushTurn(session, "you", utterance);
-      return c.json(await stepBody(session, c.req.param("id"), null, false));
+      return c.json(await heldPairBody(session, c.req.param("id")));
     }
     const resolved = resolvePair(utterance);
     if (resolved.kind === "keep" || resolved.kind === "retake") {
@@ -869,7 +869,7 @@ app.post("/api/session/:id/say", async (c) => {
     /retake|take\s+(it\s+|that\s+)?again/i.test(utterance)
   ) {
     pushTurn(session, "you", utterance);
-    return c.json(await stepBody(session, c.req.param("id"), null, false));
+    return c.json(await heldPairBody(session, c.req.param("id")));
   }
   // Manual-lock voice path: "lock now" on a capture stage with no open
   // pair fires immediately through the same confirm landing as a tap
@@ -1126,6 +1126,31 @@ export const MAX_CROP_CHARS = 500_000;
  * crop server-side; selfie/challenge locks never attempt OCR, and crop
  * bytes drop immediately after (refs + fields only, never logged).
  */
+/**
+ * Shared hold presenter: every hold-open branch (tap re-lock, voice
+ * lock-now/wait, negated retake) serves the same synthesized pair card —
+ * text, progress turn, verdict, retake-pair panel — instead of inheriting
+ * whatever turn happens to be current. Turns stay untouched (no duplicates).
+ */
+async function heldPairBody(session: Session, id: string) {
+  const held = await stepBody(session, id, null, false);
+  const ref = session.pendingCapture as string;
+  const text = LOCK_TEXT[session.flow.stage] ?? "Captured. Keep it, or retake?";
+  return {
+    ...held,
+    text,
+    turn: "progress" as const,
+    verdict:
+      session.pendingVerdict ??
+      qualityVerdict(session.flow.stage, session.lastSample),
+    panel: generatePanel("progress", session.flow.stage, {
+      text,
+      pending: true,
+      ref,
+    }),
+  };
+}
+
 async function performLock(
   session: Session,
   id: string,
@@ -1135,26 +1160,9 @@ async function performLock(
   // Idempotent behind an open pair: a racing second lock holds the first
   // card open instead of overwriting its ref — same step, same verdict.
   if (session.pendingCapture !== null) {
-    const held = await stepBody(session, id, null, false);
     // A lock racing the first lock's OCR await lands before the pair turn
-    // exists: synthesize the pair presentation (text + panel) instead of
-    // inheriting the pre-lock turn, or the client sets pendingRef with no
-    // confirm card on the glass. Turns stay untouched (no duplicates).
-    const ref = session.pendingCapture;
-    const text = LOCK_TEXT[session.flow.stage] ?? "Captured. Keep it, or retake?";
-    return {
-      ...held,
-      text,
-      turn: "progress" as const,
-      verdict:
-        session.pendingVerdict ??
-        qualityVerdict(session.flow.stage, session.lastSample),
-      panel: generatePanel("progress", session.flow.stage, {
-        text,
-        pending: true,
-        ref,
-      }),
-    };
+    // exists: serve the synthesized pair card, never the pre-lock turn.
+    return heldPairBody(session, id);
   }
   const ref = lockRef(session);
   session.pendingCapture = ref;
