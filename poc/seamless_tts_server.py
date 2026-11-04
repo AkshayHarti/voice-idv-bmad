@@ -36,9 +36,9 @@ TGT_LANG = "eng"
 
 def default_tempo() -> float:
     try:
-        return min(1.1, max(0.75, float(os.environ.get("TTS_TEMPO", "0.9"))))
+        return min(1.1, max(0.75, float(os.environ.get("TTS_TEMPO", "0.85"))))
     except ValueError:
-        return 0.9
+        return 0.85
 
 
 def wsola_stretch(x: np.ndarray, rate: int, tempo: float) -> np.ndarray:
