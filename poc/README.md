@@ -77,20 +77,27 @@ and [schemas](https://dev.meta.ai/docs/api-reference/voice/schemas):
 - Sockets must be `ws`, not Node's built-in WebSocket: the built-in
   client attempts the upgrade over HTTP/2 and dies with 1006.
 
-## TTS stage (the non-robotic voice)
+## TTS stage (Meta-only speaking leg)
 
 Meta has no TTS on Model API — Transcribe "does not synthesize speech"
-— so the speaking leg is OpenAI: each completed sentence is synthesized
-(`gpt-4o-mini-tts`, voice `nova`, MP3) and played via `afplay`, serially,
-while later sentences still generate. Barge-in kills playback.
+— so the speaking leg is Meta open-weight MMS-TTS
+(`facebook/mms-tts-eng`) running locally: the orchestrator spawns
+`poc/mms_tts_server.py` (loopback HTTP, model loaded once), and each
+completed sentence is synthesized to WAV and played via `afplay`,
+serially, while later sentences still generate. Barge-in kills
+playback. No third-party AI model anywhere in the loop.
 
-- Key: `OPENAI_API_KEY` (must be valid — a 401 falls through silently).
-- Overrides: `VOICE_POC_TTS_MODEL`, `VOICE_POC_TTS_VOICE`.
-- Ladder per sentence: `gpt-4o-mini-tts` → `tts-1` → macOS `say` →
-  log-only; `--no-audio` skips synthesis entirely.
-- Verified 2026-11-04: fallback ladder end-to-end (exit 0). The neural
-  voice itself needs a valid key — the shell's current key 401s
-  (`invalid_api_key`), so refresh it to hear the difference.
+- Setup (once): `/opt/homebrew/bin/python3.12 -m venv poc/.venv`
+  then `poc/.venv/bin/pip install torch transformers numpy`.
+  Weights (~400 MB) download into `poc/.hf-cache/` on first run
+  (override with `HF_HOME`).
+- Override the server URL: `VOICE_POC_TTS_URL`
+  (default `http://127.0.0.1:8765`).
+- Ladder per sentence: local MMS → macOS `say` (OS utility fallback,
+  not an AI model) → log-only; `--no-audio` skips synthesis entirely.
+- Verified 2026-11-04: 4.3 s of speech from a 60-char sentence in
+  0.4 s on CPU (faster than realtime), served end-to-end with
+  `voice: mms-local` lines and exit 0.
 
 ## Notes / next steps
 - `keywords[]` in the handshake already biases product-name

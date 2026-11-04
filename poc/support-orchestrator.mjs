@@ -69,44 +69,63 @@ try {
 }
 console.log(`Input: ${pcmPath} (${pcm.length} bytes ≈ ${(pcm.length / 48000).toFixed(1)} s @ 24 kHz)`);
 
-// --- TTS: OpenAI neural voice per sentence, macOS `say` fallback. ---------
-// Meta has no TTS on Model API, so the speaking leg is OpenAI (keyed via
-// OPENAI_API_KEY). Serial queue; barge-in kills playback + clears it.
-const TTS_URL = "https://api.openai.com/v1/audio/speech";
-const TTS_MODEL = process.env.VOICE_POC_TTS_MODEL ?? "gpt-4o-mini-tts";
-const TTS_VOICE = process.env.VOICE_POC_TTS_VOICE ?? "nova";
-const OPENAI_KEY = process.env.OPENAI_API_KEY ?? null;
+// --- TTS: local Meta MMS-TTS per sentence, macOS `say` fallback. ---------
+// Meta has no TTS on Model API, so the speaking leg is Meta open-weight
+// MMS running on loopback (poc/mms_tts_server.py, spawned below). Serial
+// queue; barge-in kills playback + clears it.
+const TTS_BASE = process.env.VOICE_POC_TTS_URL ?? "http://127.0.0.1:8765";
+let ttsChild = null;
+
+/** The TTS server must be up before the first turn can speak. Spawns it. */
+async function ensureTtsServer() {
+  for (let i = 0; i < 180; i++) {
+    try {
+      const res = await fetch(`${TTS_BASE}/health`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) {
+        if (i > 0) console.log("✔ Local Meta TTS is up.");
+        return true;
+      }
+    } catch { /* not up yet */ }
+    if (i === 0) {
+      console.log("Starting local Meta TTS server (first run downloads ~400 MB)...");
+      const { spawn } = await import("node:child_process");
+      ttsChild = spawn(
+        "poc/.venv/bin/python",
+        ["poc/mms_tts_server.py", "--port", String(new URL(TTS_BASE).port || 8765)],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      ttsChild.stdout?.on("data", (d) => process.stdout.write(`[tts-server] ${d}`));
+      ttsChild.stderr?.on("data", (d) => process.stdout.write(`[tts-server] ${d}`));
+      ttsChild.on("exit", (code) => { ttsChild = null; });
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  console.error("Local TTS never came up — falling back to `say` for this run.");
+  return false;
+}
+let ttsUp = false;
 let audioChain = Promise.resolve();
 let audioChild = null;
 let ttsMuted = false;
 let ttsSeq = 0;
 
-/** One sentence to spoken MP3 bytes (null on any failure). Never throws. */
-async function synthesizeOpenAI(sentence) {
-  if (!OPENAI_KEY) return null;
-  for (const model of [TTS_MODEL, "tts-1"]) {
-    try {
-      const res = await fetch(TTS_URL, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${OPENAI_KEY}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          input: sentence,
-          voice: TTS_VOICE,
-          response_format: "mp3",
-        }),
-        signal: AbortSignal.timeout(20000),
-      });
-      const kind = res.headers.get("content-type") ?? "";
-      if (!res.ok || !kind.includes("audio/")) continue; // try the fallback model
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > 1000) return buf;
-    } catch { /* try the fallback model, then say */ }
+/** One sentence to spoken WAV bytes via local MMS (null on failure). Never throws. */
+async function synthesizeLocal(sentence) {
+  if (!ttsUp) return null;
+  try {
+    const res = await fetch(`${TTS_BASE}/speak`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: sentence }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const kind = res.headers.get("content-type") ?? "";
+    if (!res.ok || !kind.includes("audio/")) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    return buf.length > 1000 ? buf : null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function playFile(file) {
@@ -137,12 +156,12 @@ function speak(sentence) {
   audioChain = audioChain.then(async () => {
     if (ttsMuted) return;
     const t0 = Date.now();
-    const mp3 = await synthesizeOpenAI(sentence);
+    const wav = await synthesizeLocal(sentence);
     if (ttsMuted) return;
-    if (mp3) {
-      console.log(`   voice: openai/${TTS_VOICE} (+${Date.now() - t0} ms synth)`);
-      const file = join(tmpdir(), `poc-tts-${process.pid}-${++ttsSeq}.mp3`);
-      writeFileSync(file, mp3);
+    if (wav) {
+      console.log(`   voice: mms-local (+${Date.now() - t0} ms synth)`);
+      const file = join(tmpdir(), `poc-tts-${process.pid}-${++ttsSeq}.wav`);
+      writeFileSync(file, wav);
       await playFile(file);
     } else {
       console.log("   voice: say (fallback)");
@@ -283,6 +302,7 @@ async function queryResponsesFallback(turnId, userQuery) {
 
 // --- Transcribe realtime session. ------------------------------------------
 const sessionId = `support-session-${Date.now()}`;
+ttsUp = await ensureTtsServer();
 const ws = new WebSocket(`${WS_URL}?sessionId=${sessionId}`);
 const tStart = Date.now();
 let firstPartialAt = 0;
@@ -371,6 +391,10 @@ ws.on("close", async (code, reasonBuf) => {
   }
   // Late turns may still be answering: drain LLM jobs and TTS first.
   await Promise.allSettled([...llmJobs, audioChain]);
+  if (ttsChild) {
+    try { ttsChild.kill(); } catch { /* already gone */ }
+    ttsChild = null;
+  }
   setTimeout(() => process.exit(acked ? 0 : 1), 500);
 });
 
