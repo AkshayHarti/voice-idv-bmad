@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Script } from "node:vm";
 import app, { LOCK_NOW_UTTERANCE } from "../dist/index.js";
 import { AUTO_CAPTURE_BEAT, matchIntent } from "../dist/flow.js";
 
@@ -373,4 +374,17 @@ test("captured preview replaces the live frame until keep/retake resolves", asyn
     "retake unhides the frame before guides redraw"
   );
   assert.ok(html.includes("drawGuides(stage, false)"), "resumed capture redraws guidance guides");
+});
+
+test("served client module parses: template-literal escapes must survive", async () => {
+  // A single backslash inside the PAGE template literal is consumed by
+  // TypeScript (e.g. '\n' becomes a real newline), shipping a script that
+  // kills the whole module: dead buttons, no fixtures, no narration.
+  const html = await getPage();
+  const match = html.match(/<script type="module">([\s\S]*)<\/script>/);
+  assert.ok(match, "inline client module present");
+  assert.doesNotThrow(
+    () => new Script(match[1], { filename: "client.mjs" }),
+    "served client script must parse"
+  );
 });

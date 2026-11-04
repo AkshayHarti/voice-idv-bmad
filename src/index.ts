@@ -3445,7 +3445,7 @@ const LIVE_WORKLET = [
   '  }',
   '});',
   ''
-].join('\n');
+].join('\\n');
 
 /**
  * Open one live turn: socket + mic + worklet. Resolves true once audio
