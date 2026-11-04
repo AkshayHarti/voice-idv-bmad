@@ -1712,7 +1712,6 @@ const PAGE = `<!doctype html>
 </style>
 
 <h1>Aria — Voice onboarding agent</h1>
-<p class="sub">Aria — Voice onboarding agent</p>
 
 <div id="progressDock"></div>
 

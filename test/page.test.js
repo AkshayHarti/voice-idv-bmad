@@ -358,7 +358,7 @@ test("header carries the Aria rebrand line", async () => {
   const html = await getPage();
   assert.ok(html.includes("<title>Aria — Voice onboarding agent</title>"), "title follows the rebrand");
   assert.ok(html.includes("<h1>Aria — Voice onboarding agent</h1>"), "h1 carries the rebrand line");
-  assert.ok(html.includes('<p class="sub">Aria — Voice onboarding agent</p>'), "sub carries the rebrand line");
+  assert.ok(!html.includes('<p class="sub">'), "no duplicate sub-line under the h1");
   assert.ok(!html.includes("AU Voice IDV demo"), "old demo title gone");
   assert.ok(!html.includes("Voice-guided capture with Aria"), "old sub-line gone");
 });
