@@ -219,6 +219,20 @@ test("verdict turn sounds before the keep/retake question", async () => {
   assert.ok(html.includes("GENERIC_VERDICT"), "generic verdict fallback");
 });
 
+test("review gate renders retained snapshots plus detail rows with a confirm pair", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("review-confirm"), "review-confirm primitive renders");
+  assert.ok(html.includes("stageSnapshots"), "per-stage snapshots retained for review");
+  assert.ok(html.includes("retainSnapshot"), "locks retain their snapshot");
+  assert.ok(html.includes("clearSnapshots"), "decided/purged/restarted runs drop snapshots");
+  assert.ok(html.includes("review-img"), "review image styling");
+  assert.ok(html.includes("reviewHeading"), "review heading focus target");
+  assert.ok(html.includes("focusReviewHeading"), "focus moves to the review card");
+  assert.ok(html.includes("doConfirm"), "confirm posts the review signal");
+  assert.ok(html.includes("review_confirmed"), "confirm fires review_confirmed");
+  assert.ok(html.includes("choice.id === 'confirm'"), "confirm choice routes to doConfirm");
+});
+
 test("snapshot stays client-side and clears on keep/retake/stop", async () => {
   const html = await getPage();
   assert.ok(html.includes("never posted"), "snapshot never leaves the device");

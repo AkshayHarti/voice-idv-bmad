@@ -15,7 +15,7 @@ spoken back, with a transcript on screen only for sighted observers.
   MRZ/photo zones, the NSW DL back card-number region, face quads in
   challenge frames. Region crops sit behind every check as Evidence.
   Falls back to exact fixture geometry when no image is present.
-- **Muse Spark** — live narration (polishing the 8 closed Turn kinds) plus
+- **Muse Spark** — live narration (polishing the 9 closed Turn kinds) plus
   the adversarial self-audit: 3 attack hypotheses per report ("how a human
   could have fooled me, and whether it was caught"), shown in the Attack
   Surface panel. Template-first: a late model turn is discarded, never
