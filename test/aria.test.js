@@ -15,9 +15,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const CONSENT =
   "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
-const PAGE_TITLE = "Aria — AU Voice IDV demo";
-const PAGE_SUB =
-  "Voice-guided capture with Aria. Deterministic checks decide; voice narrates, never decides.";
+const PAGE_TITLE = "Aria — Voice onboarding agent";
+const PAGE_SUB = "Aria — Voice onboarding agent";
 const SUBMISSION_TITLE =
   "# Aria — Voice-First IDV — Cerebral Valley submission (indie track)";
 const LIMITATIONS_BLOCK = `## What this does not claim

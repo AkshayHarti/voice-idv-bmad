@@ -65,7 +65,6 @@ test("retake pair and panel renderer with no dead controls", async () => {
   assert.ok(html.includes("retake-pair"), "retake-pair primitive renders");
   assert.ok(html.includes("'/keep'") || html.includes("/keep"), "Keep posts to keep");
   assert.ok(html.includes("'/retake'") || html.includes("/retake"), "Retake posts to retake");
-  assert.ok(!html.includes("'retry'"), "no dead retry control");
 });
 
 test("late responses are dropped; stand-in cannot double-fire or stall", async () => {
@@ -311,7 +310,7 @@ test("progress steps stick to the top of the page while the run scrolls", async 
   const html = await getPage();
   assert.ok(html.includes('id="progressDock"'), "progress dock slot at the top");
   assert.ok(
-    html.indexOf('id="progressDock"') < html.indexOf('id="fixtures"'),
+    html.indexOf('id="progressDock"') < html.indexOf('id="retry"'),
     "progress dock lands above the run controls"
   );
   assert.ok(html.includes("#progressDock { position:sticky; top:0;"), "progress dock sticks to the viewport top");
@@ -343,4 +342,76 @@ test("captured preview replaces the live frame until keep/retake resolves", asyn
     "retake unhides the frame before guides redraw"
   );
   assert.ok(html.includes("drawGuides(stage, false)"), "resumed capture redraws guidance guides");
+});
+
+test("cold open: fixed fixture auto-starts with no picker and no gate", async () => {
+  const html = await getPage();
+  assert.ok(!html.includes('id="fixtures"'), "no fixture picker");
+  assert.ok(!html.includes("fetch('/api/runs')"), "no fixture-button fetch");
+  assert.ok(!html.includes('id="start"'), "no start gate");
+  assert.ok(html.includes("const fixtureId = 'vic-dl-clean'"), "fixed default fixture");
+  assert.ok(html.includes("async function startFixedRun"), "fixed-fixture start routine");
+  assert.ok(html.includes("startFixedRun();"), "run auto-starts on page load");
+});
+
+test("header carries the Aria rebrand line", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("<title>Aria — Voice onboarding agent</title>"), "title follows the rebrand");
+  assert.ok(html.includes("<h1>Aria — Voice onboarding agent</h1>"), "h1 carries the rebrand line");
+  assert.ok(html.includes('<p class="sub">Aria — Voice onboarding agent</p>'), "sub carries the rebrand line");
+  assert.ok(!html.includes("AU Voice IDV demo"), "old demo title gone");
+  assert.ok(!html.includes("Voice-guided capture with Aria"), "old sub-line gone");
+});
+
+test("session-create failure surfaces Retry shown and enabled with the postError message", async () => {
+  const html = await getPage();
+  assert.ok(html.includes('id="retry"'), "retry control exists");
+  assert.ok(html.includes(">Retry</button>"), "retry control reads Retry");
+  assert.ok(html.includes("retryBtn.addEventListener"), "retry control is wired");
+  assert.ok(html.includes("retryBtn.addEventListener('click', () => { startFixedRun(); })"), "retry re-attempts the fixed-fixture start");
+  const starter = html.slice(html.indexOf("async function startFixedRun"), html.indexOf("retryBtn.addEventListener"));
+  assert.ok(starter.includes("post('/api/session', { fixtureId })"), "start posts the fixed fixture");
+  assert.ok(starter.includes("listenEl.textContent = postError(err)"), "failure shows the postError message");
+  assert.ok(starter.includes("retryBtn.hidden = false"), "failure shows Retry");
+  assert.ok(starter.includes("retryBtn.disabled = false"), "failure enables Retry");
+  assert.ok(html.includes("Session expired — press Retry to begin again."), "expiry names Retry");
+  assert.ok(html.includes("press Retry to try voice again."), "parked remedies name Retry");
+  assert.ok(!html.includes("press Start to begin again."), "no Start-named recovery copy remains");
+  assert.ok(!html.includes("press Start to try voice again."), "no Start-named park tail remains");
+});
+
+test("every expired-session post site surfaces the Retry it names", async () => {
+  const html = await getPage();
+  const slices = {
+    keep: html.slice(html.indexOf("async function doKeep() {"), html.indexOf("async function doRetake() {")),
+    retake: html.slice(html.indexOf("async function doRetake() {"), html.indexOf("function dockFrame(on)")),
+    standin: html.slice(html.indexOf("standinBtn.addEventListener"), html.indexOf("const LOCK_TIMEOUT_MS")),
+    confirm: html.slice(html.indexOf("async function doConfirm"), html.indexOf("function retireCard")),
+    reading: html.slice(html.indexOf("if (READING_SIGNAL[step.stage])"), html.indexOf("if (CAPTURE_SIGNAL[step.stage])")),
+    lock: html.slice(html.indexOf("async function doLock"), html.indexOf("lockBtn.addEventListener")),
+  };
+  for (const [name, slice] of Object.entries(slices)) {
+    assert.ok(slice.includes("err.status === 404"), `${name} diagnoses expiry`);
+    assert.ok(slice.includes("retryBtn.hidden = false"), `${name} shows Retry on expiry`);
+    assert.ok(slice.includes("retryBtn.disabled = false"), `${name} enables Retry on expiry`);
+  }
+});
+
+test("malformed steps and failed say turns surface the Retry they name", async () => {
+  const html = await getPage();
+  const driveStart = html.indexOf("async function drive(step)");
+  const bail = html.slice(driveStart, html.indexOf("if (step.report || step.stage", driveStart));
+  assert.ok(bail.includes("Something went wrong — press Retry to begin again."), "bail names Retry");
+  assert.ok(bail.includes("retryBtn.hidden = false"), "bail shows Retry");
+  assert.ok(bail.includes("retryBtn.disabled = false"), "bail enables Retry");
+  const respond = html.slice(html.indexOf("async function respond"), html.indexOf("async function startFixedRun"));
+  assert.equal(respond.split("retryBtn.hidden = false").length - 1, 2, "drive-throw catch and 404 branch show Retry");
+  assert.equal(respond.split("retryBtn.disabled = false").length - 1, 2, "drive-throw catch and 404 branch enable Retry");
+});
+
+test("parked-mic remedies surface the Retry they name", async () => {
+  const html = await getPage();
+  const speech = html.slice(html.indexOf("function listenSpeech"), html.indexOf("async function respond"));
+  assert.equal(speech.split("retryBtn.hidden = false").length - 1, 3, "all three parks show Retry");
+  assert.equal(speech.split("retryBtn.disabled = false").length - 1, 3, "all three parks enable Retry");
 });
