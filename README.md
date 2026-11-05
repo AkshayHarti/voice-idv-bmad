@@ -2,6 +2,8 @@
 
 **Team One Voice** (solo) · Meta Global AI Developer Hackathon
 
+**Live demo:** <https://aria-voice-idv.akshay-r555.workers.dev/page>
+
 Talk to Aria, hold up your ID, get verified. Voice-first identity
 verification built for the people camera-form KYC leaves out — blind and
 low-vision users complete the full run by voice, screen unread.
@@ -10,13 +12,18 @@ low-vision users complete the full run by voice, screen unread.
 
 ## Try it
 
+Live (no install): <https://aria-voice-idv.akshay-r555.workers.dev/page> —
+pick a fixture, say "I consent", and follow Aria's voice: document
+capture → challenge frames → selfie → spoken verdict. The token-gated
+customer link shows failures-first evidence.
+
+Local:
+
 ```bash
 npm install && npm run build && PORT=8787 npm start
 ```
 
-Open `http://localhost:8787/page`, pick a fixture, say "I consent",
-and follow Aria's voice: document capture → challenge frames → selfie →
-spoken verdict. The token-gated customer link shows failures-first evidence.
+then open `http://localhost:8787/page`.
 
 ## How it works
 
