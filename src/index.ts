@@ -45,13 +45,46 @@ export function hello(): string {
   return "hello";
 }
 
-/** Works under Node and Workers without pulling in @types/node. */
+/**
+ * Worker env cache: the middleware below captures `c.env` (vars + secrets)
+ * into this module-level store. Deployment-static values, so no per-request
+ * bleed; the merge is idempotent — repeated captures settle to the same map.
+ * Local `scripts/serve.mjs` never sets it, so local behavior is unchanged.
+ */
+const workerEnvCache: Record<string, string | undefined> = {};
+
+/**
+ * Capture Worker bindings into the module cache (idempotent merge).
+ * Only string values are kept — secrets and vars are strings, and anything
+ * else must never shadow a real `process.env` entry.
+ */
+export function cacheWorkerEnv(env: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (typeof value === "string") workerEnvCache[key] = value;
+  }
+}
+
+/**
+ * Works under Node and Workers without pulling in @types/node. Cached
+ * Worker bindings win when present; with an empty cache this returns
+ * `process.env` untouched (byte-identical local behavior).
+ */
 export function processEnv(): Record<string, string | undefined> {
   const global = globalThis as { process?: { env?: Record<string, string | undefined> } };
-  return global.process?.env ?? {};
+  const proc = global.process?.env ?? {};
+  if (Object.keys(workerEnvCache).length === 0) return proc;
+  return { ...proc, ...workerEnvCache };
 }
 
 const app = new Hono();
+
+// Thread Workers vars/secrets into provider calls: every request re-captures
+// c.env through the idempotent cache above (registered first so it runs for
+// every route; Hono runs matching handlers in registration order).
+app.use("*", async (c, next) => {
+  cacheWorkerEnv(c.env as unknown as Record<string, unknown>);
+  await next();
+});
 
 app.get("/", (c) => c.text(hello()));
 
