@@ -1,0 +1,8 @@
+{
+  // Aria on Cloudflare Workers (workers.dev). Secrets reach the worker via
+  // user-run `wrangler secret put` only — never committed here, never in chat.
+  "name": "aria-voice-idv",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-05",
+  "workers_dev": true
+}

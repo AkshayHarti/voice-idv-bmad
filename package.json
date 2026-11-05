@@ -5,12 +5,16 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test",
-    "start": "node scripts/serve.mjs"
+    "start": "node scripts/serve.mjs",
+    "deploy": "wrangler deploy",
+    "predeploy": "npm test"
   },
   "dependencies": {
-    "hono": "^4.0.0"
+    "hono": "^4.0.0",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "wrangler": "4.157.0"
   }
 }
