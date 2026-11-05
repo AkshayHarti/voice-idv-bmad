@@ -1,37 +1,42 @@
-# Aria — Voice-First ID Verification
+# Aria — Voice onboarding agent
 
 **Team One Voice** (solo) · Meta Global AI Developer Hackathon
 
-Every KYC flow assumes you can read a screen and line up a document in a box. Blind and low-vision users are excluded. Aria does the same verification work with the visual channel removed: instructions spoken, document read by the app, verdict spoken back.
+Talk to Aria, hold up your ID, get verified. Voice-first identity
+verification built for the people camera-form KYC leaves out — blind and
+low-vision users complete the full run by voice, screen unread.
 
-Full run by voice: consent → doc front/back → liveness challenge → selfie → verdict. Transcript on screen is for sighted observers only.
+> Hackathon MVP. 100% synthetic fixtures — no real PII anywhere.
 
-## Demo
-
-- Video (3 min): `TODO — paste YouTube link before submitting`
-- Live: `npm start` → `/page` (local; deploy pending)
-
-## Meta models used
-
-All calls via Meta Model API, pinned in `src/meta-models.ts`. Spend: $0.04 of $150 (see `docs/spend.md`).
-
-- **muse-spark-1.3** — live narration of every turn + adversarial self-audit (3 attack hypotheses per report)
-- **muse-wonder-1.0** — OCR on locked doc crops (`front · ocr` / `back · ocr`)
-- **muse-voice-transcribe-1.0** — ASR for consent / keep / retake
-- **sam-3.1** — `segment()` branch with fixture-geometry fallback
-
-Models narrate and perceive only — they never decide. `--no-meta` decides identically to `--meta` (parity tested).
-
-## Run
+## Try it
 
 ```bash
-npm install
-npm test
-PORT=8787 npm start
+npm install && npm run build && PORT=8787 npm start
 ```
 
-Set `META_API_KEY` in `.env` for the live Meta path. Without keys everything runs offline on local templates.
+Open `http://localhost:8787/page`, pick a fixture, say "I consent",
+and follow Aria's voice: document capture → challenge frames → selfie →
+spoken verdict. The token-gated customer link shows failures-first evidence.
 
-## What this does not claim
+## How it works
 
-Not liveness certification, not forgery proof, not certified matching. Enforced in code and UI copy. Fixtures are 100% synthetic — no real PII.
+- **Voice-led capture** — spoken instructions, real-time framing coaching,
+  auto-capture when steady ("lock now" to force it), Keep/Retake confirm
+  cards, full transcript mirror. Typing always works as fallback.
+- **Deterministic verdicts** — named checks (OCR fields, MRZ digits, card
+  number, face match band) decide by conjunction, plus DVS match and a risk
+  tier. Models narrate, segment, and guide; they never decide.
+- **Meta stack** — Spark (narration, adversarial audit), Wonder (run agent),
+  Voice Transcribe (ASR), SAM 3.1 (regions), Image (fixture art), Glimmer
+  (local core). Offline templates hold parity when keys are absent.
+
+## Repo map
+
+`src/` app + `/page` client · `test/` suites (`npm test`) ·
+`fixtures/` synthetic AU docs · `docs/` submission, specs, demo-video kit ·
+`_bmad-output/` UX spines and implementation specs.
+
+## Non-claims
+
+Not liveness certification. Not forgery proof. Uncertified face match.
+Enforced in code, UI copy, and spoken lines.
