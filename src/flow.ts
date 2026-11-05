@@ -46,8 +46,9 @@ export type Intent =
   | "wait"
   | "unknown";
 
-/** Closed system Turns (9). Template-first; every Turn is barge-inable. */
+/** Closed system Turns (10). Template-first; every Turn is barge-inable. */
 export type TurnKind =
+  | "intro"
   | "consent"
   | "instruct"
   | "re-ask"
@@ -101,10 +102,24 @@ export function withPanel(turn: Turn, stage: Stage, data: PanelData = {}): Turn 
 }
 
 const CONSENT_TEXT =
-  "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
+  "I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
 
 function consentTurn(): Turn {
   return withPanel({ kind: "consent", text: CONSENT_TEXT }, "awaiting_consent");
+}
+
+/**
+ * Spoken introduction: Aria by name and onboarding-agent role. Fires as
+ * the run's first Turn and auto-advances to the consent ask (via the
+ * `intro_done` signal) with no user input between. The consent gate is
+ * untouched — `say()` treats the intro exactly like consent, so an
+ * utterance that races the auto-advance still affirms/denies normally.
+ */
+const INTRO_TEXT =
+  "Hi, I'm Aria, your voice onboarding agent. I'll walk you through your ID check, one step at a time.";
+
+function introTurn(): Turn {
+  return withPanel({ kind: "intro", text: INTRO_TEXT }, "awaiting_consent");
 }
 
 /**
@@ -267,14 +282,18 @@ export function matchIntent(text: string): Intent {
 
 /**
  * Open a run. The run leaves `idle` and gates on spoken consent: the
- * first Turn spoken is the `consent` prompt.
+ * first Turn spoken is the `intro` turn, which auto-advances to the
+ * `consent` prompt (via the `intro_done` signal) with no user input
+ * between. The stage is `awaiting_consent` throughout, so the gate —
+ * affirm advances, deny purges, nothing captured before affirm — holds
+ * from the first spoken line.
  */
 export function startRun(fixture: string): FlowState {
   return {
     fixture,
     stage: "awaiting_consent",
     last_intent: null,
-    last_turn: consentTurn(),
+    last_turn: introTurn(),
     capturesPurged: false,
     decision: null,
     tier: null,
@@ -598,8 +617,17 @@ export function signal(s: FlowState, ev: string): FlowState {
         };
       }
       return s;
-    case "decided":
     case "awaiting_consent":
+      // Intro auto-advance: the client fires this after speaking the
+      // intro turn, serving the consent ask with no user input between.
+      // Idempotent (a duplicate re-serves the identical consent turn) and
+      // race-safe (an utterance that landed first leaves the stage here,
+      // so the pending advance still completes onto the gate).
+      if (ev === "intro_done") {
+        return { ...s, last_turn: consentTurn() };
+      }
+      return s;
+    case "decided":
     case "idle":
       return s;
   }

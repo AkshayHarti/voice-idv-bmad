@@ -14,10 +14,10 @@ import app from "../dist/index.js";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const CONSENT =
-  "I'm Aria. I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
-const PAGE_TITLE = "Aria — AU Voice IDV demo";
-const PAGE_SUB =
-  "Voice-guided capture with Aria. Deterministic checks decide; voice narrates, never decides.";
+  "I'll guide you by voice to verify your ID. Nothing is uploaded until you say so. Say — I consent — to start.";
+const INTRO =
+  "Hi, I'm Aria, your voice onboarding agent. I'll walk you through your ID check, one step at a time.";
+const PAGE_TITLE = "Aria — Voice onboarding agent";
 const SUBMISSION_TITLE =
   "# Aria — Voice-First IDV — Cerebral Valley submission (indie track)";
 const LIMITATIONS_BLOCK = `## What this does not claim
@@ -53,12 +53,6 @@ function tagText(html, tag) {
   return matches[0][1];
 }
 
-function subLine(html) {
-  const matches = [...html.matchAll(/<p class="sub">([^<]*)<\/p>/g)];
-  assert.equal(matches.length, 1, "expected exactly one .sub node");
-  return matches[0][1];
-}
-
 /** The `.turn .who` CSS rule body (label styling only). */
 function whoRule(html) {
   const matches = [...html.matchAll(/\.turn \.who \{([^}]*)\}/g)];
@@ -84,11 +78,11 @@ function renderLabel(html, who) {
   return new Function("line", `return (${matches[0][1]});`)({ who });
 }
 
-test("page chrome names Aria (title, h1, sub-line)", async () => {
+test("page chrome names Aria once (title, h1, no sub-line)", async () => {
   const html = await getPage();
   assert.equal(tagText(html, "title"), PAGE_TITLE);
   assert.equal(tagText(html, "h1"), PAGE_TITLE);
-  assert.equal(subLine(html), PAGE_SUB);
+  assert.ok(!html.includes('<p class="sub">'), "no duplicate sub-line under the h1");
   // Decision headings moved behind the customer token gate (test/result.test.js):
   // the end-user page renders the verdict moment only.
   for (const heading of ["checks — failures first", "limitations", "attack surface"]) {
@@ -114,19 +108,68 @@ test("transcript label node renders exactly Aria / you", async () => {
   );
 });
 
-test("consent turn introduces Aria; replay repeats it verbatim", async () => {
+test("intro turn opens the run; consent follows byte-identical and replay repeats it", async () => {
   const created = await post("/api/session", { fixtureId: "aus-passport-clean" });
   assert.equal(created.status, 200);
-  assert.equal(created.body.text, CONSENT);
-  assert.equal(created.body.transcript[0].text, CONSENT);
+  assert.equal(created.body.turn, "intro");
+  assert.equal(created.body.text, INTRO);
+  assert.equal(created.body.transcript[0].text, INTRO);
   assert.equal(created.body.transcript[0].who, "system");
-  assert.ok(CONSENT.includes("Aria") && CONSENT.includes("I consent"));
+  assert.ok(INTRO.includes("Aria") && INTRO.includes("onboarding agent"));
+
+  const consented = await post(`/api/session/${created.body.sessionId}/signal`, {
+    event: "intro_done",
+  });
+  assert.equal(consented.body.turn, "consent");
+  assert.equal(consented.body.text, CONSENT);
+  assert.equal(consented.body.stage, "awaiting_consent");
+  assert.ok(CONSENT.includes("I consent"));
+  assert.ok(!CONSENT.includes("Aria"), "no redundant self-naming after the intro");
+  assert.deepEqual(
+    consented.body.transcript.map((l) => l.text),
+    [INTRO, CONSENT],
+  );
+  assert.deepEqual(keyShape(consented.body.panel), PANEL_CHOICE_LIST);
 
   const replay = await post(`/api/session/${created.body.sessionId}/say`, {
     utterance: "repeat that",
   });
   assert.equal(replay.body.text, CONSENT);
   assert.equal(replay.body.turn, "replay");
+});
+
+test("consent gate holds from the intro: affirm advances, deny purges", async () => {
+  const affirmed = await post("/api/session", { fixtureId: "aus-passport-clean" });
+  const said = await post(`/api/session/${affirmed.body.sessionId}/say`, {
+    utterance: "I consent",
+  });
+  assert.equal(said.body.stage, "awaiting_doc_front");
+  assert.deepEqual(said.body.captures, []);
+
+  const denied = await post("/api/session", { fixtureId: "aus-passport-clean" });
+  const purged = await post(`/api/session/${denied.body.sessionId}/say`, {
+    utterance: "no, stop",
+  });
+  assert.equal(purged.body.stage, "idle");
+  assert.equal(purged.body.capturesPurged, true);
+  // The gate holds after the auto-advance too: affirm still advances.
+  const advanced = await post("/api/session", { fixtureId: "aus-passport-clean" });
+  await post(`/api/session/${advanced.body.sessionId}/signal`, { event: "intro_done" });
+  const saidAfter = await post(`/api/session/${advanced.body.sessionId}/say`, {
+    utterance: "I consent",
+  });
+  assert.equal(saidAfter.body.stage, "awaiting_doc_front");
+});
+
+test("stray intro_done after an answer neither re-serves nor duplicates", async () => {
+  const created = await post("/api/session", { fixtureId: "aus-passport-clean" });
+  const id = created.body.sessionId;
+  const said = await post(`/api/session/${id}/say`, { utterance: "I consent" });
+  assert.equal(said.body.turn, "instruct");
+  const stray = await post(`/api/session/${id}/signal`, { event: "intro_done" });
+  assert.equal(stray.body.turn, "instruct");
+  assert.equal(stray.body.stage, "awaiting_doc_front");
+  assert.equal(stray.body.transcript.length, said.body.transcript.length);
 });
 
 /**
@@ -233,10 +276,11 @@ const PANEL_EVIDENCE = {
 
 test("API key sets stable: session create + say + signal", async () => {
   const created = await post("/api/session", { fixtureId: "aus-passport-clean" });
-  // Fresh session: empty captures; intent/report null.
+  // Fresh session: empty captures; intent/report null. The opening turn is
+  // the text-only intro panel; the consent choice-list follows via intro_done.
   assert.deepEqual(
     keyShape(created.body),
-    stepShape([TURN_SHAPE], "object", "object", { array: [] }, PANEL_CHOICE_LIST),
+    stepShape([TURN_SHAPE], "object", "object", { array: [] }, PANEL_BASE),
   );
 
   const id = created.body.sessionId;
