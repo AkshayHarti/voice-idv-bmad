@@ -1835,6 +1835,7 @@ let activeRecognition = null;
 let voiceGen = 0;
 let silenceParked = false;
 let pendingRef = null;
+let sayPostFails = 0;
 let latestCustomerLink = null;
 // Confirm-card review state: device-local snapshot (data URL, never posted),
 // server verdict caption, stand-in flag, and whether the card is on screen.
@@ -2974,10 +2975,8 @@ async function drive(step) {
       return;
     } catch (err) {
       listenEl.textContent = postError(err);
-      if (err && err.status === 404) {
-        retryBtn.hidden = false;
-        retryBtn.disabled = false;
-      }
+      retryBtn.hidden = false;
+      retryBtn.disabled = false;
       return;
     }
   }
@@ -3427,6 +3426,7 @@ async function respond(utterance) {
   try {
     const step = await post('/api/session/' + sessionId + '/say', sayBody);
     busy = false;
+    sayPostFails = 0;
     try {
       await drive(step);
     } catch {
@@ -3436,10 +3436,23 @@ async function respond(utterance) {
     }
   } catch (err) {
     busy = false;
-    listenEl.textContent = postError(err);
-    if (err && err.status === 404) {
-      retryBtn.hidden = false;
-      retryBtn.disabled = false;
+    // A failed answer re-opens the mic (bounded): a network blip must
+    // not strand the turn voice-dead. Expired sessions need Retry, not
+    // retries; past the bound the turn yields to typed with a hint.
+    const retryable = !err || err.status !== 404;
+    if (retryable && sayPostFails < 2) {
+      sayPostFails += 1;
+      listenEl.textContent = postError(err);
+      listen();
+    } else if (retryable) {
+      listenEl.textContent = postError(err) + ' Type your answer, then press Send.';
+    } else {
+      listenEl.textContent = postError(err);
+      if (err && err.status === 404) {
+        retryBtn.hidden = false;
+        retryBtn.disabled = false;
+      }
+    }
     }
   }
 }
@@ -3461,6 +3474,7 @@ async function startFixedRun() {
   micParked = null;
   silenceParked = false;
   silentStreak = 0;
+  sayPostFails = 0;
   stopCapture();
   transcriptEl.replaceChildren();
   panelEl.replaceChildren();

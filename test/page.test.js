@@ -445,3 +445,41 @@ test("parked-mic remedies surface the Retry they name", async () => {
   assert.equal(speech.split("retryBtn.hidden = false").length - 1, 3, "all three parks show Retry");
   assert.equal(speech.split("retryBtn.disabled = false").length - 1, 3, "all three parks enable Retry");
 });
+
+test("intro auto-advance failure always surfaces Retry (pre-listen recovery)", async () => {
+  const html = await getPage();
+  const drive = html.slice(html.indexOf("async function drive(step)"), html.indexOf("let listenerErrors"));
+  const branchAt = drive.indexOf("step.turn === 'intro'");
+  assert.ok(branchAt !== -1, "intro branch lives in drive()");
+  const branch = drive.slice(branchAt, drive.indexOf("if (step.report)", branchAt));
+  const catchAt = branch.indexOf("} catch (err) {");
+  assert.ok(catchAt !== -1, "intro advance has a catch");
+  const introCatch = branch.slice(catchAt);
+  assert.ok(introCatch.includes("listenEl.textContent = postError(err)"), "advance failure messages instead of stalling");
+  assert.ok(introCatch.includes("retryBtn.hidden = false"), "any advance failure shows Retry");
+  assert.ok(introCatch.includes("retryBtn.disabled = false"), "any advance failure enables Retry");
+  assert.ok(!introCatch.includes("err.status === 404"), "no expiry-only guard: pre-listen Retry is the only recovery");
+});
+
+test("retryable say failures re-arm the mic bounded, then yield to typed", async () => {
+  const html = await getPage();
+  assert.ok(html.includes("let sayPostFails = 0"), "say-failure counter declared beside the pair counter");
+  const respond = html.slice(html.indexOf("async function respond"), html.indexOf("async function startFixedRun"));
+  assert.ok(respond.includes("sayPostFails = 0"), "say failures reset on success");
+  assert.ok(respond.includes("sayPostFails += 1"), "say failures counted separately from the pair streak");
+  assert.ok(respond.includes("sayPostFails < 2"), "say re-arm is bounded like the pair path");
+  const elseAt = respond.indexOf("} else {");
+  assert.ok(elseAt !== -1, "catch-all else branch exists");
+  assert.ok(respond.indexOf("listen();", elseAt) !== -1, "retryable say failure re-arms the mic");
+  assert.ok(respond.includes("Type your answer, then press Send."), "bound expiry names the typed fallback");
+  assert.ok(
+    respond.indexOf("sayPostFails < 2") < respond.indexOf("Type your answer, then press Send."),
+    "bound gates the typed hint",
+  );
+  const notFoundAt = respond.indexOf("if (err && err.status === 404)");
+  assert.ok(notFoundAt !== -1, "404 sub-branch kept");
+  assert.ok(respond.slice(notFoundAt).includes("retryBtn.hidden = false"), "expiry still shows Retry");
+  assert.ok(!respond.slice(notFoundAt).includes("listen();"), "expiry never re-listens");
+  const starter = html.slice(html.indexOf("async function startFixedRun"), html.indexOf("retryBtn.addEventListener"));
+  assert.ok(starter.includes("sayPostFails = 0"), "fresh run resets the say failure count");
+});
