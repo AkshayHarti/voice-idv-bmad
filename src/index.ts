@@ -1892,6 +1892,7 @@ let voiceGen = 0;
 let silenceParked = false;
 let pendingRef = null;
 let pairPostFails = 0;
+let sayPostFails = 0;
 let latestCustomerLink = null;
 // Confirm-card review state: device-local snapshot (data URL, never posted),
 // server verdict caption, stand-in flag, and whether the card is on screen.
@@ -2020,6 +2021,16 @@ voiceToggle.addEventListener('click', () => {
 // otherwise. Set by the providers fetch alongside asrPrimary.
 let ttsMms = false;
 let ttsAudio = null;
+// Dead-sidecar flag: MMS *fetch* failures (network error or empty audio URL)
+// suffix the note line once per run so the synthesis fallback is visible.
+// play() rejections are expected pre-gesture and never flag.
+let ttsFetchFlagged = false;
+const TTS_FALLBACK_NOTE = ' · MMS TTS unavailable, using synthesis';
+function flagTtsFetchFallback() {
+  if (ttsFetchFlagged) return;
+  ttsFetchFlagged = true;
+  try { noteEl.textContent += TTS_FALLBACK_NOTE; } catch { /* note line missing */ }
+}
 function stopTtsAudio() {
   if (ttsAudio) {
     try { ttsAudio.pause(); } catch { /* already stopped */ }
@@ -2045,9 +2056,15 @@ function speakMms(text) {
     let done = false;
     const finish = () => { if (!done) { done = true; stopTtsAudio(); setOrb('idle'); resolve(); } };
     const fallback = () => { if (!done) speakSynth(text).then(finish); };
-    post('/api/tts', { text }).then((res) => {
+    // Bound the TTS fetch: a hung sidecar falls back to synthesis fast
+    // instead of stalling first speech. Mirrors the transcribe upload.
+    const ttsCtl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const ttsTimer = ttsCtl ? setTimeout(() => { try { ttsCtl.abort(); } catch { /* already settled */ } }, 6000) : null;
+    const clearTtsTimer = () => { if (ttsTimer) clearTimeout(ttsTimer); };
+    post('/api/tts', { text }, ttsCtl ? ttsCtl.signal : undefined).then((res) => {
+      clearTtsTimer();
       const url = typeof res.audio === 'string' ? res.audio : '';
-      if (!url) return fallback();
+      if (!url) { flagTtsFetchFallback(); return fallback(); }
       const audio = new Audio(url);
       ttsAudio = audio;
       audio.onended = finish;
@@ -2056,7 +2073,7 @@ function speakMms(text) {
         const played = audio.play();
         if (played && played.catch) played.catch(() => fallback());
       } catch { fallback(); }
-    }).catch(() => fallback());
+    }).catch(() => { clearTtsTimer(); flagTtsFetchFallback(); fallback(); });
     // A stuck fetch or silent file never wedges the run.
     setTimeout(finish, Math.min(15000, 3000 + text.length * 60));
   });
@@ -3097,10 +3114,8 @@ async function drive(step) {
       return;
     } catch (err) {
       listenEl.textContent = postError(err);
-      if (err && err.status === 404) {
-        retryBtn.hidden = false;
-        retryBtn.disabled = false;
-      }
+      retryBtn.hidden = false;
+      retryBtn.disabled = false;
       return;
     }
   }
@@ -3587,6 +3602,7 @@ async function respond(utterance) {
     const step = await post('/api/session/' + sessionId + '/say', sayBody);
     busy = false;
     pairPostFails = 0;
+    sayPostFails = 0;
     try {
       await drive(step);
     } catch {
@@ -3608,10 +3624,22 @@ async function respond(utterance) {
     } else if (pairOpen && retryable) {
       listenEl.textContent = postError(err) + ' Tap Keep or Retake, or type your answer.';
     } else {
-      listenEl.textContent = postError(err);
-      if (err && err.status === 404) {
-        retryBtn.hidden = false;
-        retryBtn.disabled = false;
+      // A failed non-pair answer re-opens the mic (bounded like the pair
+      // path): a network blip must not strand the turn voice-dead.
+      // Expired sessions need Retry, not retries; past the bound the turn
+      // yields to typed with a hint.
+      if (retryable && sayPostFails < 2) {
+        sayPostFails += 1;
+        listenEl.textContent = postError(err);
+        listen();
+      } else if (retryable) {
+        listenEl.textContent = postError(err) + ' Type your answer, then press Send.';
+      } else {
+        listenEl.textContent = postError(err);
+        if (err && err.status === 404) {
+          retryBtn.hidden = false;
+          retryBtn.disabled = false;
+        }
       }
     }
   }
@@ -3635,6 +3663,15 @@ async function startFixedRun() {
   silenceParked = false;
   silentStreak = 0;
   pairPostFails = 0;
+  sayPostFails = 0;
+  // Fresh run, fresh TTS flag: the dead-sidecar suffix clears so each run
+  // can flag its own fetch failure exactly once.
+  ttsFetchFlagged = false;
+  try {
+    if (noteEl && typeof noteEl.textContent === 'string' && noteEl.textContent.endsWith(TTS_FALLBACK_NOTE)) {
+      noteEl.textContent = noteEl.textContent.slice(0, -TTS_FALLBACK_NOTE.length);
+    }
+  } catch { /* note line missing */ }
   stopCapture();
   transcriptEl.replaceChildren();
   panelEl.replaceChildren();
