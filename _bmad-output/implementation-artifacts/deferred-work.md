@@ -70,3 +70,6 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-friendlier-voice.md`
   summary: Add the auto-capture re-vote banner to brainstorm.html so the keepsake alone cannot mislead an implementer.
   evidence: moot 2026-11-04 — no brainstorm keepsake exists anywhere in the repo; nothing to annotate.
+- source_spec: `/tmp/voice-idv-cold-open/_bmad-output/implementation-artifacts/spec-aria-intro-turn.md`
+  summary: Docs turn-kind list also omits `review` (pre-existing staleness, predates the intro kind)
+  evidence: docs/specs/2026-10-31-au-voice-idv-spec.md line 57 lists 8 kinds, missing both `review` (pre-existing) and `intro` (fixed by this story's patch entry P5)

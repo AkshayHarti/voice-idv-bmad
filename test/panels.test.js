@@ -11,6 +11,7 @@ import {
 // provider tags thread. Precondition: `npm run build`.
 
 const KINDS = [
+  "intro",
   "consent",
   "instruct",
   "re-ask",
@@ -24,6 +25,7 @@ const KINDS = [
 
 test("every Turn kind binds exactly one primitive panel", () => {
   const expected = {
+    intro: "text",
     consent: "choice-list",
     instruct: "progress-steps",
     "re-ask": "choice-list",
