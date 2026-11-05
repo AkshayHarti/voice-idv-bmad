@@ -3453,7 +3453,6 @@ async function respond(utterance) {
         retryBtn.disabled = false;
       }
     }
-    }
   }
 }
 

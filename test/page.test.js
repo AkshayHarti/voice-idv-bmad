@@ -468,9 +468,13 @@ test("retryable say failures re-arm the mic bounded, then yield to typed", async
   assert.ok(respond.includes("sayPostFails = 0"), "say failures reset on success");
   assert.ok(respond.includes("sayPostFails += 1"), "say failures counted separately from the pair streak");
   assert.ok(respond.includes("sayPostFails < 2"), "say re-arm is bounded like the pair path");
-  const elseAt = respond.indexOf("} else {");
-  assert.ok(elseAt !== -1, "catch-all else branch exists");
-  assert.ok(respond.indexOf("listen();", elseAt) !== -1, "retryable say failure re-arms the mic");
+  const rearmAt = respond.indexOf("sayPostFails += 1");
+  assert.ok(rearmAt !== -1, "re-arm branch exists");
+  const rearmEnd = respond.indexOf("} else if (retryable)", rearmAt);
+  assert.ok(
+    rearmEnd !== -1 && respond.slice(rearmAt, rearmEnd).includes("listen();"),
+    "retryable say failure re-arms the mic",
+  );
   assert.ok(respond.includes("Type your answer, then press Send."), "bound expiry names the typed fallback");
   assert.ok(
     respond.indexOf("sayPostFails < 2") < respond.indexOf("Type your answer, then press Send."),
